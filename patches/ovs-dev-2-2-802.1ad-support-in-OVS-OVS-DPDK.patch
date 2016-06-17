@@ -3,7 +3,8 @@
 @@ -561,9 +561,14 @@
              break;
          }
--        case OVS_ACTION_ATTR_PUSH_1ADVLAN:  //to be handled for DPDK mode
+
+-        case OVS_ACTION_ATTR_PUSH_1ADVLAN:  //to be handled via openflow mode
 -             break;
 +        case OVS_ACTION_ATTR_PUSH_1ADVLAN: {//to be handled for DPDK mode
 +                 const struct ovs_action_push_vlan *vlan1 = nl_attr_get(a);
@@ -12,9 +13,7 @@
 +            }
 +            break;
 +        }
+
          case OVS_ACTION_ATTR_POP_VLAN:
              for (i = 0; i < cnt; i++) {
                  eth_pop_vlan(packets[i]);
---- openvswitch-2.4.0-1ad-3.18/lib/dpif-netdev.c             2015-11-03 17:18:53.000000000 +0530
-+++ openvswitch-2.4.0-1ad-3.18-new/lib/dpif-netdev.c                2015-11-21 00:05:50.042204761 +0530
-@@ -2519,7 +2519,8 @@
