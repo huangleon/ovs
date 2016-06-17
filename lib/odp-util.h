@@ -203,6 +203,13 @@ enum slow_path_reason commit_odp_actions(const struct flow *,
                                          struct ofpbuf *odp_actions,
                                          struct flow_wildcards *wc,
                                          bool use_masked);
+enum slow_path_reason commit_odp_1ad_actions(const struct flow *,
+                                         struct flow *base,
+                                         struct ofpbuf *odp_actions,
+                                         struct flow_wildcards *wc,
+                                         bool use_masked);
+
+
 
 /* ofproto-dpif interface.
  *

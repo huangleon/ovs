@@ -137,6 +137,7 @@ struct ofbundle {
     int vlan;                   /* -1=trunk port, else a 12-bit VLAN ID. */
     unsigned long *trunks;      /* Bitmap of trunked VLANs, if 'vlan' == -1.
                                  * NULL if all VLANs are trunked. */
+    unsigned long *cvlans;
     struct lacp *lacp;          /* LACP if LACP is enabled, otherwise NULL. */
     struct bond *bond;          /* Nonnull iff more than one port. */
     bool use_priority_tags;     /* Use 802.1p tag for frames in VLAN 0? */
@@ -646,7 +647,7 @@ type_run(const char *type)
             HMAP_FOR_EACH (bundle, hmap_node, &ofproto->bundles) {
                 xlate_bundle_set(ofproto, bundle, bundle->name,
                                  bundle->vlan_mode, bundle->vlan,
-                                 bundle->trunks, bundle->use_priority_tags,
+                                 bundle->trunks, bundle->cvlans, bundle->use_priority_tags,
                                  bundle->bond, bundle->lacp,
                                  bundle->floodable);
             }
@@ -2768,6 +2769,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     struct ofport_dpif *port;
     struct ofbundle *bundle;
     unsigned long *trunks;
+    unsigned long *cvlans;
     int vlan;
     size_t i;
     bool ok;
@@ -2794,6 +2796,7 @@ bundle_set(struct ofproto *ofproto_, void *aux,
         bundle->vlan_mode = PORT_VLAN_TRUNK;
         bundle->vlan = -1;
         bundle->trunks = NULL;
+        bundle->cvlans = NULL;
         bundle->use_priority_tags = s->use_priority_tags;
         bundle->lacp = NULL;
         bundle->bond = NULL;
@@ -2870,14 +2873,22 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     switch (s->vlan_mode) {
     case PORT_VLAN_ACCESS:
         trunks = NULL;
+        cvlans = NULL;
         break;
 
     case PORT_VLAN_TRUNK:
         trunks = CONST_CAST(unsigned long *, s->trunks);
+        cvlans = NULL;
+        break;
+
+    case PORT_VLAN_TRUNK_QINQ:
+        trunks = NULL;
+        cvlans = CONST_CAST(unsigned long *, s->cvlans);
         break;
 
     case PORT_VLAN_NATIVE_UNTAGGED:
     case PORT_VLAN_NATIVE_TAGGED:
+        cvlans = NULL;
         if (vlan != 0 && (!s->trunks
                           || !bitmap_is_set(s->trunks, vlan)
                           || bitmap_is_set(s->trunks, 0))) {
@@ -2909,6 +2920,25 @@ bundle_set(struct ofproto *ofproto_, void *aux,
     }
     if (trunks != s->trunks) {
         free(trunks);
+    }
+
+    if (!vlan_bitmap_equal(cvlans, bundle->cvlans))
+    {
+        free(bundle->cvlans);
+        if (cvlans == s->cvlans)
+        {
+            bundle->cvlans = vlan_bitmap_clone(cvlans);
+        }
+        else
+        {
+            bundle->cvlans = cvlans;
+            cvlans = NULL;
+        }
+        need_flush = true;
+    }
+    if (cvlans != s->cvlans)
+    {
+        free(cvlans);
     }
 
     /* Bonding. */

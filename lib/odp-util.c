@@ -93,6 +93,7 @@ odp_action_len(uint16_t type)
     case OVS_ACTION_ATTR_TUNNEL_POP: return sizeof(uint32_t);
     case OVS_ACTION_ATTR_USERSPACE: return ATTR_LEN_VARIABLE;
     case OVS_ACTION_ATTR_PUSH_VLAN: return sizeof(struct ovs_action_push_vlan);
+    case OVS_ACTION_ATTR_PUSH_1ADVLAN: return sizeof(struct ovs_action_push_vlan);
     case OVS_ACTION_ATTR_POP_VLAN: return 0;
     case OVS_ACTION_ATTR_PUSH_MPLS: return sizeof(struct ovs_action_push_mpls);
     case OVS_ACTION_ATTR_POP_MPLS: return sizeof(ovs_be16);
@@ -694,6 +695,8 @@ format_odp_action(struct ds *ds, const struct nlattr *a)
         }
         format_vlan_tci(ds, vlan->vlan_tci, OVS_BE16_MAX, false);
         ds_put_char(ds, ')');
+        break;
+    case OVS_ACTION_ATTR_PUSH_1ADVLAN: //to be handled via openflow
         break;
     case OVS_ACTION_ATTR_POP_VLAN:
         ds_put_cstr(ds, "pop_vlan");
@@ -4562,6 +4565,29 @@ commit_vlan_action(ovs_be16 vlan_tci, struct flow *base,
     base->vlan_tci = vlan_tci;
 }
 
+static void
+commit_vlan_1ad_action(ovs_be16 vlan_tci, struct flow *base,
+                   struct ofpbuf *odp_actions, struct flow_wildcards *wc)
+{
+    if (base->vlan_tci == vlan_tci) {
+        return;
+    }
+
+    pop_vlan(base, odp_actions, wc);
+
+    if (vlan_tci & htons(VLAN_CFI))
+    {
+        struct ovs_action_push_vlan vlan;
+
+        vlan.vlan_tpid = htons(ETH_TYPE_VLAN_8021AD);
+        vlan.vlan_tci = vlan_tci;
+        nl_msg_put_unspec(odp_actions, OVS_ACTION_ATTR_PUSH_1ADVLAN,
+                          &vlan, sizeof vlan);
+    }
+
+    base->vlan_tci = vlan_tci;
+}
+
 /* Wildcarding already done at action translation time. */
 static void
 commit_mpls_action(const struct flow *flow, struct flow *base,
@@ -4954,3 +4980,20 @@ commit_odp_actions(const struct flow *flow, struct flow *base,
 
     return slow;
 }
+
+enum slow_path_reason
+commit_odp_1ad_actions(const struct flow *flow, struct flow *base,
+                   struct ofpbuf *odp_actions, struct flow_wildcards *wc,
+                   bool use_masked)
+{
+    enum slow_path_reason slow;
+    commit_set_ether_addr_action(flow, base, odp_actions, wc, use_masked);
+    slow = commit_set_nw_action(flow, base, odp_actions, wc, use_masked);
+    commit_set_port_action(flow, base, odp_actions, wc, use_masked);
+    commit_mpls_action(flow, base, odp_actions);
+    commit_vlan_1ad_action(flow->vlan_tci, base, odp_actions, wc);
+    commit_set_priority_action(flow, base, odp_actions, wc, use_masked);
+    commit_set_pkt_mark_action(flow, base, odp_actions, wc, use_masked);
+    return slow;
+}
+

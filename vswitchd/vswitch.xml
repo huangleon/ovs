@@ -1170,6 +1170,13 @@
           exception that a packet that egresses on a native-untagged port in
           the native VLAN will not have an 802.1Q header.
         </dd>
+        <dt>trunk-qinq</dt>
+        <dd>
+         A trunk-qinq port adds 802.1ad header to untagged packet received and adds
+         outer vlan header(1ad) to already tagged packet on ingress.On egress pops the
+         outer vlan header if the outer vlan vid matches the configured outer vid
+        </dd>
+
       </dl>
       <p>
         A packet will only egress through bridge ports that carry the VLAN of
@@ -1211,6 +1218,13 @@
           A native-tagged or native-untagged port always trunks its native
           VLAN, regardless of whether <ref column="trunks"/> includes that
           VLAN.
+        </p>
+      </column>
+      <column name="cvlans">
+        <p>
+          For a trunk-qinq port if specific cvlans are specified only those
+         cvlans are 1ad tunneled, others are dropped. If no cvlans specified
+         explicitly then all cvlans are 1ad tunneled.
         </p>
       </column>
 

@@ -298,6 +298,14 @@ parse_vlan(const void **datap, size_t *sizep)
             return qp->tci | htons(VLAN_CFI);
         }
     }
+    if (eth->eth_type == htons(ETH_TYPE_VLAN_8021AD)) {
+        if (OVS_LIKELY(*sizep
+                       >= sizeof(struct qtag_prefix) + sizeof(ovs_be16))) {
+            const struct qtag_prefix *qp = data_pull(datap, sizep, sizeof *qp);
+            return qp->tci | htons(VLAN_CFI);
+        }
+    }
+
     return 0;
 }
 

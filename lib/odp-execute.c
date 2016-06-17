@@ -481,6 +481,7 @@ requires_datapath_assistance(const struct nlattr *a)
     case OVS_ACTION_ATTR_SET:
     case OVS_ACTION_ATTR_SET_MASKED:
     case OVS_ACTION_ATTR_PUSH_VLAN:
+    case OVS_ACTION_ATTR_PUSH_1ADVLAN:
     case OVS_ACTION_ATTR_POP_VLAN:
     case OVS_ACTION_ATTR_SAMPLE:
     case OVS_ACTION_ATTR_HASH:
@@ -559,6 +560,9 @@ odp_execute_actions(void *dp, struct dp_packet **packets, int cnt, bool steal,
             }
             break;
         }
+
+        case OVS_ACTION_ATTR_PUSH_1ADVLAN:  //to be handled via openflow mode
+             break;
 
         case OVS_ACTION_ATTR_POP_VLAN:
             for (i = 0; i < cnt; i++) {

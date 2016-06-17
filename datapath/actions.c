@@ -222,7 +222,6 @@ static int set_mpls(struct sk_buff *skb, struct sw_flow_key *flow_key,
 static int pop_vlan(struct sk_buff *skb, struct sw_flow_key *key)
 {
 	int err;
-
 	err = skb_vlan_pop(skb);
 	if (skb_vlan_tag_present(skb))
 		invalidate_flow_key(key);
@@ -912,6 +911,10 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
 		case OVS_ACTION_ATTR_PUSH_VLAN:
 			err = push_vlan(skb, key, nla_data(a));
 			break;
+
+                             case OVS_ACTION_ATTR_PUSH_1ADVLAN:
+                        err = push_vlan(skb, key, nla_data(a));
+                        break;
 
 		case OVS_ACTION_ATTR_POP_VLAN:
 			err = pop_vlan(skb, key);

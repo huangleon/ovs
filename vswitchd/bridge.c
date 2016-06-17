@@ -934,6 +934,8 @@ port_configure(struct port *port)
     if (cfg->vlan_mode) {
         if (!strcmp(cfg->vlan_mode, "access")) {
             s.vlan_mode = PORT_VLAN_ACCESS;
+        } else if (!strcmp(cfg->vlan_mode, "trunk-qinq")) {
+            s.vlan_mode = PORT_VLAN_TRUNK_QINQ;
         } else if (!strcmp(cfg->vlan_mode, "trunk")) {
             s.vlan_mode = PORT_VLAN_TRUNK;
         } else if (!strcmp(cfg->vlan_mode, "native-tagged")) {
@@ -959,6 +961,11 @@ port_configure(struct port *port)
     }
     s.use_priority_tags = smap_get_bool(&cfg->other_config, "priority-tags",
                                         false);
+    s.cvlans = NULL;
+    if (cfg->n_cvlans)
+    {
+       s.cvlans = vlan_bitmap_from_array(cfg->cvlans, cfg->n_cvlans);
+    }
 
     /* Get LACP settings. */
     s.lacp = port_configure_lacp(port, &lacp_settings);

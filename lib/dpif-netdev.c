@@ -3510,6 +3510,7 @@ dp_execute_cb(void *aux_, struct dp_packet **packets, int cnt,
         break;
 
     case OVS_ACTION_ATTR_PUSH_VLAN:
+    case OVS_ACTION_ATTR_PUSH_1ADVLAN:
     case OVS_ACTION_ATTR_POP_VLAN:
     case OVS_ACTION_ATTR_PUSH_MPLS:
     case OVS_ACTION_ATTR_POP_MPLS:

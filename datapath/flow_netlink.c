@@ -2037,6 +2037,7 @@ static int __ovs_nla_copy_actions(const struct nlattr *attr,
 			[OVS_ACTION_ATTR_PUSH_MPLS] = sizeof(struct ovs_action_push_mpls),
 			[OVS_ACTION_ATTR_POP_MPLS] = sizeof(__be16),
 			[OVS_ACTION_ATTR_PUSH_VLAN] = sizeof(struct ovs_action_push_vlan),
+                                             [OVS_ACTION_ATTR_PUSH_1ADVLAN] = sizeof(struct ovs_action_push_vlan),
 			[OVS_ACTION_ATTR_POP_VLAN] = 0,
 			[OVS_ACTION_ATTR_SET] = (u32)-1,
 			[OVS_ACTION_ATTR_SET_MASKED] = (u32)-1,
@@ -2094,6 +2095,15 @@ static int __ovs_nla_copy_actions(const struct nlattr *attr,
 				return -EINVAL;
 			vlan_tci = vlan->vlan_tci;
 			break;
+
+                             case OVS_ACTION_ATTR_PUSH_1ADVLAN:
+                        vlan = nla_data(a);
+                        if (vlan->vlan_tpid != htons(ETH_P_8021AD))
+                             return -EINVAL;
+                        if (!(vlan->vlan_tci & htons(VLAN_TAG_PRESENT)))
+                             return -EINVAL;
+                        vlan_tci = vlan->vlan_tci;
+                        break;
 
 		case OVS_ACTION_ATTR_RECIRC:
 			break;
