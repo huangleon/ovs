@@ -1,0 +1,19 @@
+The original patch files contains the 'malformed lines':
+
+http://unix.stackexchange.com/questions/29127/malformed-patch-error-while-applying-the-diff-to-wget-source-with-patch
+
+This is a general problem with diffs copied/pasted into text file without space indentation. You need to add space in front of each line except for symbols "+", "-" and "@@". To avoid this problem, it is always suggested to generated the diff files before in hand (by diff or version control diff tool) and then download the diff file as whole, instead of manual browser/copy-paste. This would keep the space indentation as is in the diff file and will not cause any warnings/errors with patch utility.
+
+To solve this problm (pay attention of 'whitespace' problem) :
+sed 's/^\([^ @\+\-]\)/ \1/g' patches/ovs-dev-1-2-802.1ad-support-in-OVS-OVS-DPDK.patch > patches/1.txt
+sed 's/^\([^ @\+\-]\)/ \1/g' patches/ovs-dev-2-2-802.1ad-support-in-OVS-OVS-DPDK.patch > patches/2.txt
+
+Patch source code:
+use this command
+patch -p1 -N --ignore-whitespace --dry-run --verbose  < patches/1.txt
+patch -p1 -N --ignore-whitespace --dry-run --verbose  < patches/2.txt
+to do the dry-run to check errors.
+
+After fixing errors, patch the code.
+patch -p1 --ignore-whitespace --verbose  < patches/1.txt
+patch -p1 --ignore-whitespace --verbose  < patches/2.txt
