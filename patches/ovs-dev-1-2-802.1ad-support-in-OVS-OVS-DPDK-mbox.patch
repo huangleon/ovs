@@ -1,0 +1,856 @@
+From patchwork Wed Feb 17 11:44:42 2016
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+Subject: [ovs-dev,1/2] : 802.1ad support in OVS & OVS-DPDK
+From: gayathri.manepalli@wipro.com
+X-Patchwork-Id: 584074
+Message-Id: <TY1PR0301MB1056472848965F08C06121A38EAE0@TY1PR0301MB1056.apcprd03.prod.outlook.com>
+To: <dev@openvswitch.org>
+Date: Wed, 17 Feb 2016 11:44:42 +0000
+
+Hi All,
+Below are the configuration and patch details which provides the 802.1ad support
+for OVS.
+Description & configuration :
+OVS supports the following port types with respect to configuration and
+datapath handling.
+1. Access
+2. Trunk
+3. Native-tagged.
+4. Native-untagged.
+Access port adds vlan header on ingress and removes vlan header on egress
+By default trunk passes every VLAN traffic if not configured with any specific
+VLAN ID's
+A native-tagged port resembles a trunk port, with the exception that a packet
+without an 802.1Q header that ingresses on a native-tagged port is in the
+''native VLAN'' (specified in the tag column).
+
+A native-untagged port resembles a native-tagged port, with the exception that
+a packet that egresses on a native-untagged port in the native VLAN will not
+have an 802.1Q header (pop).
+
+Apart from above 4, to enable 802.1ad, we have introduced a new mode called
+"trunk-qinq"
+Trunk-qinq port operational modes:
+Trunk-qinq port can be configured to work in two modes shown below
+
+1.       Default mode.
+
+2.       Qualified C-VLAN mode.
+Default mode: When you just configure a port as trunk-qinq port as below, it
+falls into default mode
+       $ovs-vsctl set port eth0 tag=118 vlan_mode=trunk-qinq
+In Default mode, a trunk-qinq port adds 802.1ad vlan header with vid = <118>
+for every C-VLAN tagged traffic received on ingress.
+On egress if the packet to be sent out is already 1ad tagged with vid =<118>
+then removes the 1ad vlan header and send it out to the trunk port of
+customer edge bridge.
+Qualified C-VLAN mode:  A trunk-qinq port can be set to work in Qualified
+C-VLAN mode as follows.
+       $ovs-vsctl set port eth0 tag=118 vlan_mode=trunk-qinq cvlans=10, 20, 30
+In Qualified C-VLAN mode, a trunk-qinq port adds 802.1ad vlan header with
+vid = <118> only for qualified C-VLANS mentioned in cvlans=10, 20, 30.
+Qualified cvlans are nothing but a set of specific cvlan's receiving from
+customer; which are to be designated for 802.1ad tunneled.
+On egress if the packet to be sent out is already 1ad tagged with vid =<118>
+then removes the 1ad vlan header and send it out to the trunk port of
+customer edge bridge.
+
+Signed-off-by: Manepalli S Gayathri gayathri.manepalli@wipro.com<mailto:gayathri.manepalli@wipro.com>
+
+
+Thanks & Regards,
+Gayathri
+The information contained in this electronic message and any attachments to this message are intended for the exclusive use of the addressee(s) and may contain proprietary, confidential or privileged information. If you are not the intended recipient, you should not disseminate, distribute or copy this e-mail. Please notify the sender immediately and destroy all copies of this message and any attachments. WARNING: Computer viruses can be transmitted via email. The recipient should check this email and any attachments for the presence of viruses. The company accepts no liability for any damage caused by any virus transmitted by this email. www.wipro.com
+
+--- openvswitch-2.4.0/datapath/actions.c             2015-08-21 05:48:21.014479288 +0530
++++ openvswitch-2.4.0-1ad-3.18/datapath/actions.c       2015-11-03 21:42:29.861054985 +0530
+@@ -222,7 +222,6 @@
+static int pop_vlan(struct sk_buff *skb, struct sw_flow_key *key)
+{
+               int err;
+-
+               err = skb_vlan_pop(skb);
+               if (skb_vlan_tag_present(skb))
+                               invalidate_flow_key(key);
+@@ -910,6 +909,10 @@
+                                               err = push_vlan(skb, key, nla_data(a));
+                                               break;
+
++                             case OVS_ACTION_ATTR_PUSH_1ADVLAN:
++                        err = push_vlan(skb, key, nla_data(a));
++                        break;
++
+                               case OVS_ACTION_ATTR_POP_VLAN:
+                                               err = pop_vlan(skb, key);
+                                               break;
+--- openvswitch-2.4.0/datapath/flow_netlink.c 2015-08-21 05:48:21.062479285 +0530
++++ openvswitch-2.4.0-1ad-3.18/datapath/flow_netlink.c           2015-11-03 17:18:54.171216700 +0530
+@@ -2037,6 +2037,7 @@
+                                               [OVS_ACTION_ATTR_PUSH_MPLS] = sizeof(struct ovs_action_push_mpls),
+                                               [OVS_ACTION_ATTR_POP_MPLS] = sizeof(__be16),
+                                               [OVS_ACTION_ATTR_PUSH_VLAN] = sizeof(struct ovs_action_push_vlan),
++                                             [OVS_ACTION_ATTR_PUSH_1ADVLAN] = sizeof(struct ovs_action_push_vlan),
+                                               [OVS_ACTION_ATTR_POP_VLAN] = 0,
+                                               [OVS_ACTION_ATTR_SET] = (u32)-1,
+                                               [OVS_ACTION_ATTR_SET_MASKED] = (u32)-1,
+@@ -2094,6 +2095,15 @@
+                                                               return -EINVAL;
+                                               vlan_tci = vlan->vlan_tci;
+                                               break;
++
++                             case OVS_ACTION_ATTR_PUSH_1ADVLAN:
++                        vlan = nla_data(a);
++                        if (vlan->vlan_tpid != htons(ETH_P_8021AD))
++                             return -EINVAL;
++                        if (!(vlan->vlan_tci & htons(VLAN_TAG_PRESENT)))
++                             return -EINVAL;
++                        vlan_tci = vlan->vlan_tci;
++                        break;
+
+                                case OVS_ACTION_ATTR_RECIRC:
+                                               break;
+--- openvswitch-2.4.0/ofproto/ofproto.h             2015-08-21 05:48:21.954479263 +0530
++++ openvswitch-2.4.0-1ad-3.18/ofproto/ofproto.h       2015-11-03 17:18:54.033216701 +0530
+@@ -381,7 +381,9 @@
+     /* Untagged incoming packets are part of 'vlan', as are incoming packets
+      * tagged with 'vlan'.  Outgoing packets tagged with 'vlan' are untagged.
+      * Other VLANs in 'trunks' are trunked. */
+-    PORT_VLAN_NATIVE_UNTAGGED
++    PORT_VLAN_NATIVE_UNTAGGED,
++
++    PORT_VLAN_TRUNK_QINQ
+};
+
+ /* Configuration of bundles. */
+@@ -394,6 +396,7 @@
+     enum port_vlan_mode vlan_mode; /* Selects mode for vlan and trunks */
+     int vlan;                   /* VLAN VID, except for PORT_VLAN_TRUNK. */
+     unsigned long *trunks;      /* vlan_bitmap, except for PORT_VLAN_ACCESS. */
++    unsigned long *cvlans;
+     bool use_priority_tags;     /* Use 802.1p tag for frames in VLAN 0? */
+
+     struct bond_settings *bond; /* Must be nonnull iff if n_slaves > 1. */
+--- openvswitch-2.4.0/ofproto/ofproto-dpif-xlate.c         2015-11-03 23:00:31.052007121 +0530
++++ openvswitch-2.4.0-1ad-3.18/ofproto/ofproto-dpif-xlate.c   2015-11-03 23:00:23.771007195 +0530
+@@ -117,6 +117,7 @@
+     int vlan;                      /* -1=trunk port, else a 12-bit VLAN ID. */
+     unsigned long *trunks;         /* Bitmap of trunked VLANs, if 'vlan' == -1.
+                                     * NULL if all VLANs are trunked. */
++    unsigned long *cvlans;
+     bool use_priority_tags;        /* Use 802.1p tag for frames in VLAN 0? */
+     bool floodable;                /* No port has OFPUTIL_PC_NO_FLOOD set? */
+};
+@@ -443,7 +444,7 @@
+static bool input_vid_is_valid(uint16_t vid, struct xbundle *, bool warn);
+static uint16_t input_vid_to_vlan(const struct xbundle *, uint16_t vid);
+static void output_normal(struct xlate_ctx *, const struct xbundle *,
+-                          uint16_t vlan);
++                          uint16_t vlan, enum port_vlan_mode inport_vlan_mode);
+
+ /* Optional bond recirculation parameter to compose_output_action(). */
+struct xlate_bond_recirc {
+@@ -453,7 +454,7 @@
+};
+
+ static void compose_output_action(struct xlate_ctx *, ofp_port_t ofp_port,
+-                                  const struct xlate_bond_recirc *xr);
++                                  const struct xlate_bond_recirc *xr, enum port_vlan_mode vlan_mode);
+
+ static struct xbridge *xbridge_lookup(struct xlate_cfg *,
+                                       const struct ofproto_dpif *);
+@@ -485,7 +486,7 @@
+                               const struct dpif_backer_support *);
+static void xlate_xbundle_set(struct xbundle *xbundle,
+                               enum port_vlan_mode vlan_mode, int vlan,
+-                              unsigned long *trunks, bool use_priority_tags,
++                              unsigned long *trunks, unsigned long *cvlans, bool use_priority_tags,
+                               const struct bond *bond, const struct lacp *lacp,
+                               bool floodable);
+static void xlate_xport_set(struct xport *xport, odp_port_t odp_port,
+@@ -601,7 +602,7 @@
+static void
+xlate_xbundle_set(struct xbundle *xbundle,
+                   enum port_vlan_mode vlan_mode, int vlan,
+-                  unsigned long *trunks, bool use_priority_tags,
++                  unsigned long *trunks, unsigned long *cvlans, bool use_priority_tags,
+                   const struct bond *bond, const struct lacp *lacp,
+                   bool floodable)
+{
+@@ -610,6 +611,7 @@
+     xbundle->vlan_mode = vlan_mode;
+     xbundle->vlan = vlan;
+     xbundle->trunks = trunks;
++    xbundle->cvlans = cvlans;
+     xbundle->use_priority_tags = use_priority_tags;
+     xbundle->floodable = floodable;
+
+@@ -704,7 +706,7 @@
+     xlate_xbundle_init(new_xcfg, new_xbundle);
+
+     xlate_xbundle_set(new_xbundle, xbundle->vlan_mode,
+-                      xbundle->vlan, xbundle->trunks,
++                      xbundle->vlan, xbundle->trunks, xbundle->cvlans,
+                       xbundle->use_priority_tags, xbundle->bond, xbundle->lacp,
+                       xbundle->floodable);
+     LIST_FOR_EACH (xport, bundle_node, &xbundle->xports) {
+@@ -898,7 +900,7 @@
+void
+xlate_bundle_set(struct ofproto_dpif *ofproto, struct ofbundle *ofbundle,
+                  const char *name, enum port_vlan_mode vlan_mode, int vlan,
+-                 unsigned long *trunks, bool use_priority_tags,
++                 unsigned long *trunks, unsigned long *cvlans, bool use_priority_tags,
+                  const struct bond *bond, const struct lacp *lacp,
+                  bool floodable)
+{
+@@ -918,7 +920,7 @@
+     free(xbundle->name);
+     xbundle->name = xstrdup(name);
+
+-    xlate_xbundle_set(xbundle, vlan_mode, vlan, trunks,
++    xlate_xbundle_set(xbundle, vlan_mode, vlan, trunks, cvlans,
+                       use_priority_tags, bond, lacp, floodable);
+}
+
+@@ -1433,7 +1435,7 @@
+static bool
+xbundle_trunks_vlan(const struct xbundle *bundle, uint16_t vlan)
+{
+-    return (bundle->vlan_mode != PORT_VLAN_ACCESS
++    return ((bundle->vlan_mode != PORT_VLAN_ACCESS && bundle->vlan_mode != PORT_VLAN_TRUNK_QINQ)
+             && (!bundle->trunks || bitmap_is_set(bundle->trunks, vlan)));
+}
+
+@@ -1443,6 +1445,12 @@
+     return vlan == xbundle->vlan || xbundle_trunks_vlan(xbundle, vlan);
+}
+
++static bool
++xbundle_trunks_cvlan(const struct xbundle *bundle, uint16_t vlan)
++{
++    return ( !bundle->cvlans || bitmap_is_set(bundle->cvlans, vlan));
++}
++
+static mirror_mask_t
+xbundle_mirror_out(const struct xbridge *xbridge, struct xbundle *xbundle)
+{
+@@ -1584,7 +1592,7 @@
+             struct xlate_cfg *xcfg = ovsrcu_get(struct xlate_cfg *, &xcfgp);
+             struct xbundle *out_xbundle = xbundle_lookup(xcfg, out);
+             if (out_xbundle) {
+-                output_normal(ctx, out_xbundle, vlan);
++                output_normal(ctx, out_xbundle, vlan, -1);
+             }
+         } else if (vlan != out_vlan
+                    && !eth_addr_is_reserved(orig_flow->dl_dst)) {
+@@ -1593,7 +1601,7 @@
+             LIST_FOR_EACH (xbundle, list_node, &xbridge->xbundles) {
+                 if (xbundle_includes_vlan(xbundle, out_vlan)
+                     && !xbundle_mirror_out(xbridge, xbundle)) {
+-                    output_normal(ctx, xbundle, out_vlan);
++                    output_normal(ctx, xbundle, out_vlan, -1);
+                 }
+             }
+         }
+@@ -1614,6 +1622,10 @@
+         return in_xbundle->vlan;
+         break;
+
++    case PORT_VLAN_TRUNK_QINQ:
++        return in_xbundle->vlan;
++        break;
++
+     case PORT_VLAN_TRUNK:
+         return vid;
+
+@@ -1655,6 +1667,23 @@
+         }
+         return true;
+
++    case PORT_VLAN_TRUNK_QINQ:
++        if (in_xbundle->cvlans)
++        {
++           if(!xbundle_trunks_cvlan(in_xbundle, vid))
++           {
++                if (warn)
++                {
++                       static struct vlog_rate_limit rl = VLOG_RATE_LIMIT_INIT(1, 5);
++                       VLOG_WARN_RL(&rl, "dropping VLAN %"PRIu16" packet "
++                             "received on port %s not explicitly configured for 1ad trunking "
++                             "VLAN %"PRIu16, vid, in_xbundle->name, vid);
++                }
++                 return false;
++           }
++        }
++        return true;
++
+     case PORT_VLAN_NATIVE_UNTAGGED:
+     case PORT_VLAN_NATIVE_TAGGED:
+         if (!vid) {
+@@ -1701,6 +1730,9 @@
+     case PORT_VLAN_NATIVE_UNTAGGED:
+         return vlan == out_xbundle->vlan ? 0 : vlan;
+
++    case PORT_VLAN_TRUNK_QINQ:
++        return 0;
++
+     default:
+         OVS_NOT_REACHED();
+     }
+@@ -1708,7 +1740,7 @@
+
+ static void
+output_normal(struct xlate_ctx *ctx, const struct xbundle *out_xbundle,
+-              uint16_t vlan)
++              uint16_t vlan, enum port_vlan_mode inport_vlan_mode)
+{
+     ovs_be16 *flow_tci = &ctx->xin->flow.vlan_tci;
+     uint16_t vid;
+@@ -1782,7 +1814,11 @@
+     }
+     *flow_tci = tci;
+
+-    compose_output_action(ctx, xport->ofp_port, use_recirc ? &xr : NULL);
++    if (inport_vlan_mode == PORT_VLAN_TRUNK_QINQ)
++        compose_output_action(ctx, xport->ofp_port, use_recirc ? &xr : NULL, inport_vlan_mode);
++    else
++        compose_output_action(ctx, xport->ofp_port, use_recirc ? &xr : NULL,-1);
++
+     *flow_tci = old_tci;
+}
+
+@@ -2092,7 +2128,7 @@
+         mcast_xbundle = xbundle_lookup(xcfg, b->port);
+         if (mcast_xbundle && mcast_xbundle != in_xbundle) {
+             xlate_report(ctx, "forwarding to mcast group port");
+-            output_normal(ctx, mcast_xbundle, vlan);
++            output_normal(ctx, mcast_xbundle, vlan, -1);
+         } else if (!mcast_xbundle) {
+             xlate_report(ctx, "mcast group port is unknown, dropping");
+         } else {
+@@ -2117,7 +2153,7 @@
+         mcast_xbundle = xbundle_lookup(xcfg, mrouter->port);
+         if (mcast_xbundle && mcast_xbundle != in_xbundle) {
+             xlate_report(ctx, "forwarding to mcast router port");
+-            output_normal(ctx, mcast_xbundle, vlan);
++            output_normal(ctx, mcast_xbundle, vlan, -1);
+         } else if (!mcast_xbundle) {
+             xlate_report(ctx, "mcast router port is unknown, dropping");
+         } else {
+@@ -2142,7 +2178,7 @@
+         mcast_xbundle = xbundle_lookup(xcfg, fport->port);
+         if (mcast_xbundle && mcast_xbundle != in_xbundle) {
+             xlate_report(ctx, "forwarding to mcast flood port");
+-            output_normal(ctx, mcast_xbundle, vlan);
++            output_normal(ctx, mcast_xbundle, vlan, -1);
+         } else if (!mcast_xbundle) {
+             xlate_report(ctx, "mcast flood port is unknown, dropping");
+         } else {
+@@ -2167,7 +2203,7 @@
+         mcast_xbundle = xbundle_lookup(xcfg, rport->port);
+         if (mcast_xbundle && mcast_xbundle != in_xbundle) {
+             xlate_report(ctx, "forwarding Report to mcast flagged port");
+-            output_normal(ctx, mcast_xbundle, vlan);
++            output_normal(ctx, mcast_xbundle, vlan, -1);
+         } else if (!mcast_xbundle) {
+             xlate_report(ctx, "mcast port is unknown, dropping the Report");
+         } else {
+@@ -2181,16 +2217,21 @@
+                    uint16_t vlan)
+{
+     struct xbundle *xbundle;
++    ovs_be16 tci = ctx->xin->flow.vlan_tci;
++
++    if (in_xbundle->vlan_mode == PORT_VLAN_TRUNK_QINQ)
++        ctx->base_flow.vlan_tci = 0;
+
+     LIST_FOR_EACH (xbundle, list_node, &ctx->xbridge->xbundles) {
+         if (xbundle != in_xbundle
+             && xbundle_includes_vlan(xbundle, vlan)
+             && xbundle->floodable
+             && !xbundle_mirror_out(ctx->xbridge, xbundle)) {
+-            output_normal(ctx, xbundle, vlan);
++            output_normal(ctx, xbundle, vlan, in_xbundle->vlan_mode);
+         }
+     }
+     ctx->xout->nf_output_iface = NF_OUT_FLOOD;
++    ctx->xin->flow.vlan_tci = tci;
+}
+
+ static void
+@@ -2349,8 +2390,10 @@
+             struct xlate_cfg *xcfg = ovsrcu_get(struct xlate_cfg *, &xcfgp);
+             struct xbundle *mac_xbundle = xbundle_lookup(xcfg, mac_port);
+             if (mac_xbundle && mac_xbundle != in_xbundle) {
++                if (in_xbundle->vlan_mode == PORT_VLAN_TRUNK_QINQ)
++                          ctx->base_flow.vlan_tci = 0;
+                 xlate_report(ctx, "forwarding to learned port");
+-                output_normal(ctx, mac_xbundle, vlan);
++                output_normal(ctx, mac_xbundle, vlan, -1);
+             } else if (!mac_xbundle) {
+                 xlate_report(ctx, "learned port is unknown, dropping");
+             } else {
+@@ -2734,7 +2777,7 @@
+
+ static void
+compose_output_action__(struct xlate_ctx *ctx, ofp_port_t ofp_port,
+-                        const struct xlate_bond_recirc *xr, bool check_stp)
++                        const struct xlate_bond_recirc *xr, bool check_stp, enum port_vlan_mode vlan_mode)
+{
+     const struct xport *xport = get_ofp_port(ctx->xbridge, ofp_port);
+     struct flow_wildcards *wc = &ctx->xout->wc;
+@@ -2955,9 +2998,17 @@
+     if (out_port != ODPP_NONE) {
+         bool use_masked = ctx->xbridge->support.masked_set_action;
+
+-        ctx->xout->slow |= commit_odp_actions(flow, &ctx->base_flow,
++        if( vlan_mode == PORT_VLAN_TRUNK_QINQ)
++                ctx->xout->slow |= commit_odp_1ad_actions(flow, &ctx->base_flow,
+                                               ctx->xout->odp_actions,
+-                                              wc, use_masked);
++                                              wc,
++                                              use_masked);
++        else
++                ctx->xout->slow |= commit_odp_actions(flow, &ctx->base_flow,
++                                               ctx->xout->odp_actions,
++                                               wc,
++                                               use_masked);
++
+
+         if (xr) {
+             struct ovs_action_hash *act_hash;
+@@ -3017,9 +3068,9 @@
+
+ static void
+compose_output_action(struct xlate_ctx *ctx, ofp_port_t ofp_port,
+-                      const struct xlate_bond_recirc *xr)
++                      const struct xlate_bond_recirc *xr, enum port_vlan_mode vlan_mode)
+{
+-    compose_output_action__(ctx, ofp_port, xr, true);
++    compose_output_action__(ctx, ofp_port, xr, true, vlan_mode);
+}
+
+ static void
+@@ -3412,9 +3463,9 @@
+         }
+
+         if (all) {
+-            compose_output_action__(ctx, xport->ofp_port, NULL, false);
++            compose_output_action__(ctx, xport->ofp_port, NULL, false, -1);
+         } else if (!(xport->config & OFPUTIL_PC_NO_FLOOD)) {
+-            compose_output_action(ctx, xport->ofp_port, NULL);
++            compose_output_action(ctx, xport->ofp_port, NULL, -1);
+         }
+     }
+
+@@ -3668,7 +3719,7 @@
+
+     switch (port) {
+     case OFPP_IN_PORT:
+-        compose_output_action(ctx, ctx->xin->flow.in_port.ofp_port, NULL);
++        compose_output_action(ctx, ctx->xin->flow.in_port.ofp_port, NULL, -1);
+         break;
+     case OFPP_TABLE:
+         xlate_table_action(ctx, ctx->xin->flow.in_port.ofp_port,
+@@ -3695,7 +3746,7 @@
+     case OFPP_LOCAL:
+     default:
+         if (port != ctx->xin->flow.in_port.ofp_port) {
+-            compose_output_action(ctx, port, NULL);
++            compose_output_action(ctx, port, NULL, -1);
+         } else {
+             xlate_report(ctx, "skipping output to input port");
+         }
+@@ -3754,7 +3805,7 @@
+     /* Add datapath actions. */
+     flow_priority = ctx->xin->flow.skb_priority;
+     ctx->xin->flow.skb_priority = priority;
+-    compose_output_action(ctx, ofp_port, NULL);
++    compose_output_action(ctx, ofp_port, NULL, -1);
+     ctx->xin->flow.skb_priority = flow_priority;
+
+     /* Update NetFlow output port. */
+@@ -4261,7 +4312,7 @@
+                    sizeof wc->masks.skb_priority);
+             xlate_set_queue_action(ctx, ofpact_get_SET_QUEUE(a)->queue_id);
+             break;
+-
++
+         case OFPACT_POP_QUEUE:
+             memset(&wc->masks.skb_priority, 0xff,
+                    sizeof wc->masks.skb_priority);
+@@ -4977,7 +5028,7 @@
+             && xbridge->has_in_band
+             && in_band_must_output_to_local_port(flow)
+             && !actions_output_to_local_port(&ctx)) {
+-            compose_output_action(&ctx, OFPP_LOCAL, NULL);
++            compose_output_action(&ctx, OFPP_LOCAL, NULL, -1);
+         }
+
+         if (!xin->recirc) {
+--- openvswitch-2.4.0/ofproto/ofproto-dpif.c    2015-08-21 05:48:21.902479262 +0530
++++ openvswitch-2.4.0-1ad-3.18/ofproto/ofproto-dpif.c              2015-11-03 17:18:54.033216701 +0530
+@@ -137,6 +137,7 @@
+     int vlan;                   /* -1=trunk port, else a 12-bit VLAN ID. */
+     unsigned long *trunks;      /* Bitmap of trunked VLANs, if 'vlan' == -1.
+                                  * NULL if all VLANs are trunked. */
++    unsigned long *cvlans;
+     struct lacp *lacp;          /* LACP if LACP is enabled, otherwise NULL. */
+     struct bond *bond;          /* Nonnull iff more than one port. */
+     bool use_priority_tags;     /* Use 802.1p tag for frames in VLAN 0? */
+@@ -646,7 +647,7 @@
+             HMAP_FOR_EACH (bundle, hmap_node, &ofproto->bundles) {
+                 xlate_bundle_set(ofproto, bundle, bundle->name,
+                                  bundle->vlan_mode, bundle->vlan,
+-                                 bundle->trunks, bundle->use_priority_tags,
++                                 bundle->trunks, bundle->cvlans, bundle->use_priority_tags,
+                                  bundle->bond, bundle->lacp,
+                                  bundle->floodable);
+             }
+@@ -2768,6 +2769,7 @@
+     struct ofport_dpif *port;
+     struct ofbundle *bundle;
+     unsigned long *trunks;
++    unsigned long *cvlans;
+     int vlan;
+     size_t i;
+     bool ok;
+@@ -2794,6 +2796,7 @@
+         bundle->vlan_mode = PORT_VLAN_TRUNK;
+         bundle->vlan = -1;
+         bundle->trunks = NULL;
++        bundle->cvlans = NULL;
+         bundle->use_priority_tags = s->use_priority_tags;
+         bundle->lacp = NULL;
+         bundle->bond = NULL;
+@@ -2870,14 +2873,22 @@
+     switch (s->vlan_mode) {
+     case PORT_VLAN_ACCESS:
+         trunks = NULL;
++        cvlans = NULL;
+         break;
+
+     case PORT_VLAN_TRUNK:
+         trunks = CONST_CAST(unsigned long *, s->trunks);
++        cvlans = NULL;
++        break;
++
++    case PORT_VLAN_TRUNK_QINQ:
++        trunks = NULL;
++        cvlans = CONST_CAST(unsigned long *, s->cvlans);
+         break;
+
+     case PORT_VLAN_NATIVE_UNTAGGED:
+     case PORT_VLAN_NATIVE_TAGGED:
++        cvlans = NULL;
+         if (vlan != 0 && (!s->trunks
+                           || !bitmap_is_set(s->trunks, vlan)
+                           || bitmap_is_set(s->trunks, 0))) {
+@@ -2910,6 +2921,25 @@
+     if (trunks != s->trunks) {
+         free(trunks);
+     }
++
++    if (!vlan_bitmap_equal(cvlans, bundle->cvlans))
++    {
++        free(bundle->cvlans);
++        if (cvlans == s->cvlans)
++        {
++            bundle->cvlans = vlan_bitmap_clone(cvlans);
++        }
++        else
++        {
++            bundle->cvlans = cvlans;
++            cvlans = NULL;
++        }
++        need_flush = true;
++    }
++    if (cvlans != s->cvlans)
++    {
++        free(cvlans);
++    }
+
+     /* Bonding. */
+     if (!list_is_short(&bundle->ports)) {
+--- openvswitch-2.4.0/vswitchd/bridge.c              2015-08-21 05:48:22.362479252 +0530
++++ openvswitch-2.4.0-1ad-3.18/vswitchd/bridge.c        2015-11-03 17:18:53.900216703 +0530
+@@ -934,6 +934,8 @@
+     if (cfg->vlan_mode) {
+         if (!strcmp(cfg->vlan_mode, "access")) {
+             s.vlan_mode = PORT_VLAN_ACCESS;
++        } else if (!strcmp(cfg->vlan_mode, "trunk-qinq")) {
++            s.vlan_mode = PORT_VLAN_TRUNK_QINQ;
+         } else if (!strcmp(cfg->vlan_mode, "trunk")) {
+             s.vlan_mode = PORT_VLAN_TRUNK;
+         } else if (!strcmp(cfg->vlan_mode, "native-tagged")) {
+@@ -959,6 +961,11 @@
+     }
+     s.use_priority_tags = smap_get_bool(&cfg->other_config, "priority-tags",
+                                         false);
++    s.cvlans = NULL;
++    if (cfg->n_cvlans)
++    {
++       s.cvlans = vlan_bitmap_from_array(cfg->cvlans, cfg->n_cvlans);
++    }
+
+     /* Get LACP settings. */
+     s.lacp = port_configure_lacp(port, &lacp_settings);
+--- openvswitch-2.4.0/vswitchd/vswitch.ovsschema       2015-08-12 02:08:18.123317347 +0530
++++ openvswitch-2.4.0-1ad-3.18/vswitchd/vswitch.ovsschema 2015-11-03 17:18:53.900216703 +0530
+@@ -1,6 +1,6 @@
+{"name": "Open_vSwitch",
+  "version": "7.12.1",
+- "cksum": "2211824403 22535",
++ "cksum": "3377693257 22744",
+  "tables": {
+    "Open_vSwitch": {
+      "columns": {
+@@ -144,6 +144,11 @@
+                           "minInteger": 0,
+                           "maxInteger": 4095},
+                   "min": 0, "max": 4096}},
++       "cvlans": {
++         "type": {"key": {"type": "integer",
++                          "minInteger": 0,
++                          "maxInteger": 4095},
++                  "min": 0, "max": 4096}},
+        "tag": {
+          "type": {"key": {"type": "integer",
+                           "minInteger": 0,
+@@ -151,7 +156,7 @@
+                   "min": 0, "max": 1}},
+        "vlan_mode": {
+          "type": {"key": {"type": "string",
+-           "enum": ["set", ["trunk", "access", "native-tagged", "native-untagged"]]},
++           "enum": ["set", ["trunk","trunk-qinq","access", "native-tagged", "native-untagged"]]},
+          "min": 0, "max": 1}},
+        "qos": {
+          "type": {"key": {"type": "uuid",
+--- openvswitch-2.4.0/datapath/linux/compat/include/linux/openvswitch.h       2015-08-21 05:48:21.074479285 +0530
++++ openvswitch-2.4.0-1ad-3.18/datapath/linux/compat/include/linux/openvswitch.h 2015-11-03 17:18:54.175216700 +0530
+@@ -690,6 +690,7 @@
+               OVS_ACTION_ATTR_USERSPACE,    /* Nested OVS_USERSPACE_ATTR_*. */
+               OVS_ACTION_ATTR_SET,          /* One nested OVS_KEY_ATTR_*. */
+               OVS_ACTION_ATTR_PUSH_VLAN,    /* struct ovs_action_push_vlan. */
++        OVS_ACTION_ATTR_PUSH_1ADVLAN,
+               OVS_ACTION_ATTR_POP_VLAN,     /* No argument. */
+               OVS_ACTION_ATTR_SAMPLE,       /* Nested OVS_SAMPLE_ATTR_*. */
+               OVS_ACTION_ATTR_RECIRC,       /* u32 recirc_id. */
+--- openvswitch-2.4.0/lib/odp-util.c         2015-08-21 05:48:28.218479104 +0530
++++ openvswitch-2.4.0-1ad-3.18/lib/odp-util.c   2015-11-03 17:18:53.924216702 +0530
+@@ -93,6 +93,7 @@
+     case OVS_ACTION_ATTR_TUNNEL_POP: return sizeof(uint32_t);
+     case OVS_ACTION_ATTR_USERSPACE: return ATTR_LEN_VARIABLE;
+     case OVS_ACTION_ATTR_PUSH_VLAN: return sizeof(struct ovs_action_push_vlan);
++    case OVS_ACTION_ATTR_PUSH_1ADVLAN: return sizeof(struct ovs_action_push_vlan);
+     case OVS_ACTION_ATTR_POP_VLAN: return 0;
+     case OVS_ACTION_ATTR_PUSH_MPLS: return sizeof(struct ovs_action_push_mpls);
+     case OVS_ACTION_ATTR_POP_MPLS: return sizeof(ovs_be16);
+@@ -695,6 +696,8 @@
+         format_vlan_tci(ds, vlan->vlan_tci, OVS_BE16_MAX, false);
+         ds_put_char(ds, ')');
+         break;
++    case OVS_ACTION_ATTR_PUSH_1ADVLAN: //to be handled via openflow
++        break;
+     case OVS_ACTION_ATTR_POP_VLAN:
+         ds_put_cstr(ds, "pop_vlan");
+         break;
+@@ -4543,6 +4546,29 @@
+     base->vlan_tci = vlan_tci;
+}
+
++static void
++commit_vlan_1ad_action(ovs_be16 vlan_tci, struct flow *base,
++                   struct ofpbuf *odp_actions, struct flow_wildcards *wc)
++{
++    if (base->vlan_tci == vlan_tci) {
++        return;
++    }
++
++    pop_vlan(base, odp_actions, wc);
++
++    if (vlan_tci & htons(VLAN_CFI))
++    {
++        struct ovs_action_push_vlan vlan;
++
++        vlan.vlan_tpid = htons(ETH_TYPE_VLAN_8021AD);
++        vlan.vlan_tci = vlan_tci;
++        nl_msg_put_unspec(odp_actions, OVS_ACTION_ATTR_PUSH_1ADVLAN,
++                          &vlan, sizeof vlan);
++    }
++
++    base->vlan_tci = vlan_tci;
++}
++
+/* Wildcarding already done at action translation time. */
+static void
+commit_mpls_action(const struct flow *flow, struct flow *base,
+@@ -4935,3 +4961,20 @@
+
+     return slow;
+}
++
++enum slow_path_reason
++commit_odp_1ad_actions(const struct flow *flow, struct flow *base,
++                   struct ofpbuf *odp_actions, struct flow_wildcards *wc,
++                   bool use_masked)
++{
++    enum slow_path_reason slow;
++    commit_set_ether_addr_action(flow, base, odp_actions, wc, use_masked);
++    slow = commit_set_nw_action(flow, base, odp_actions, wc, use_masked);
++    commit_set_port_action(flow, base, odp_actions, wc, use_masked);
++    commit_mpls_action(flow, base, odp_actions);
++    commit_vlan_1ad_action(flow->vlan_tci, base, odp_actions, wc);
++    commit_set_priority_action(flow, base, odp_actions, wc, use_masked);
++    commit_set_pkt_mark_action(flow, base, odp_actions, wc, use_masked);
++    return slow;
++}
++
+--- openvswitch-2.4.0/lib/odp-util.h        2015-08-21 05:48:21.486479273 +0530
++++ openvswitch-2.4.0-1ad-3.18/lib/odp-util.h  2015-11-03 17:18:53.930216702 +0530
+@@ -203,6 +203,13 @@
+                                          struct ofpbuf *odp_actions,
+                                          struct flow_wildcards *wc,
+                                          bool use_masked);
++enum slow_path_reason commit_odp_1ad_actions(const struct flow *,
++                                         struct flow *base,
++                                         struct ofpbuf *odp_actions,
++                                         struct flow_wildcards *wc,
++                                         bool use_masked);
++
++
+
+
+ /* ofproto-dpif interface.
+  *
+--- openvswitch-2.4.0/ofproto/ofproto-dpif-xlate.h        2015-08-21 05:48:21.874479265 +0530
++++ openvswitch-2.4.0-1ad-3.18/ofproto/ofproto-dpif-xlate.h  2015-11-03 17:18:54.031216701 +0530
+@@ -216,7 +216,7 @@
+
+ void xlate_bundle_set(struct ofproto_dpif *, struct ofbundle *,
+                       const char *name, enum port_vlan_mode, int vlan,
+-                      unsigned long *trunks, bool use_priority_tags,
++                      unsigned long *trunks, unsigned long *cvlans, bool use_priority_tags,
+                       const struct bond *, const struct lacp *,
+                       bool floodable);
+void xlate_bundle_remove(struct ofbundle *);
+--- openvswitch-2.4.0/vswitchd/vswitch.xml       2015-08-21 05:48:22.394479252 +0530
++++ openvswitch-2.4.0-1ad-3.18/vswitchd/vswitch.xml 2015-11-03 17:18:53.902216703 +0530
+@@ -1170,6 +1170,13 @@
+           exception that a packet that egresses on a native-untagged port in
+           the native VLAN will not have an 802.1Q header.
+         </dd>
++        <dt>trunk-qinq</dt>
++        <dd>
++         A trunk-qinq port adds 802.1ad header to untagged packet received and adds
++         outer vlan header(1ad) to already tagged packet on ingress.On egress pops the
++         outer vlan header if the outer vlan vid matches the configured outer vid
++        </dd>
++
+       </dl>
+       <p>
+         A packet will only egress through bridge ports that carry the VLAN of
+@@ -1213,6 +1220,13 @@
+           VLAN.
+         </p>
+       </column>
++      <column name="cvlans">
++        <p>
++          For a trunk-qinq port if specific cvlans are specified only those
++         cvlans are 1ad tunneled, others are dropped. If no cvlans specified
++         explicitly then all cvlans are 1ad tunneled.
++        </p>
++      </column>
+
+       <column name="other_config" key="priority-tags"
+               type='{"type": "boolean"}'>
+--- openvswitch-2.4.0/lib/odp-execute.c              2015-08-21 05:48:21.442479276 +0530
++++ openvswitch-2.4.0-1ad-3.18/lib/odp-execute.c        2015-11-03 17:18:53.954216702 +0530
+@@ -481,6 +481,7 @@
+     case OVS_ACTION_ATTR_SET:
+     case OVS_ACTION_ATTR_SET_MASKED:
+     case OVS_ACTION_ATTR_PUSH_VLAN:
++    case OVS_ACTION_ATTR_PUSH_1ADVLAN:
+     case OVS_ACTION_ATTR_POP_VLAN:
+     case OVS_ACTION_ATTR_SAMPLE:
+     case OVS_ACTION_ATTR_HASH:
+@@ -560,6 +561,9 @@
+             break;
+         }
+
++        case OVS_ACTION_ATTR_PUSH_1ADVLAN:  //to be handled via openflow mode
++             break;
++
+         case OVS_ACTION_ATTR_POP_VLAN:
+             for (i = 0; i < cnt; i++) {
+                 eth_pop_vlan(packets[i]);
+--- openvswitch-2.4.0/lib/dpif.c 2015-08-21 05:48:21.262479281 +0530
++++ openvswitch-2.4.0-1ad-3.18/lib/dpif.c           2015-11-03 17:18:53.949216702 +0530
+@@ -1135,6 +1135,7 @@
+
+     case OVS_ACTION_ATTR_HASH:
+     case OVS_ACTION_ATTR_PUSH_VLAN:
++    case OVS_ACTION_ATTR_PUSH_1ADVLAN:
+     case OVS_ACTION_ATTR_POP_VLAN:
+     case OVS_ACTION_ATTR_PUSH_MPLS:
+     case OVS_ACTION_ATTR_POP_MPLS:
+--- openvswitch-2.4.0/lib/dpif-netdev.c 2015-08-21 05:48:21.218479282 +0530
++++ openvswitch-2.4.0-1ad-3.18/lib/dpif-netdev.c          2015-11-03 17:18:53.944216702 +0530
+@@ -3529,6 +3529,7 @@
+         break;
+
+     case OVS_ACTION_ATTR_PUSH_VLAN:
++    case OVS_ACTION_ATTR_PUSH_1ADVLAN:
+     case OVS_ACTION_ATTR_POP_VLAN:
+     case OVS_ACTION_ATTR_PUSH_MPLS:
+     case OVS_ACTION_ATTR_POP_MPLS:
+--- openvswitch-2.4.0/lib/flow.c                2015-08-21 05:48:21.306479280 +0530
++++ openvswitch-2.4.0-1ad-3.18/lib/flow.c          2015-11-03 17:18:53.932216702 +0530
+@@ -298,6 +298,14 @@
+             return qp->tci | htons(VLAN_CFI);
+         }
+     }
++    if (eth->eth_type == htons(ETH_TYPE_VLAN_8021AD)) {
++        if (OVS_LIKELY(*sizep
++                       >= sizeof(struct qtag_prefix) + sizeof(ovs_be16))) {
++            const struct qtag_prefix *qp = data_pull(datap, sizep, sizeof *qp);
++            return qp->tci | htons(VLAN_CFI);
++        }
++    }
++
+     return 0;
+}
+
+--- openvswitch-2.4.0/.travis.yml              2015-08-21 05:48:20.842479290 +0530
++++ openvswitch-2.4.0-1ad-3.18/.travis.yml        2015-11-03 17:18:54.227216699 +0530
+@@ -13,7 +13,7 @@
+   - KERNEL=4.0.2
+   - KERNEL=3.17.7 DPDK=1
+   - KERNEL=3.17.7 DPDK=1 OPTS="--enable-shared"
+-  - KERNEL=3.17.7
++  - KERNEL=3.18.22
+   - KERNEL=3.16.7
+   - KERNEL=3.14.27
+   - KERNEL=3.12.35
+--- openvswitch-2.4.0/acinclude.m4        2015-08-20 22:21:36.258995254 +0530
++++ openvswitch-2.4.0-1ad-3.18/acinclude.m4  2015-11-03 17:18:54.227216699 +0530
+@@ -322,6 +322,7 @@
+   OVS_GREP_IFELSE([$KSRC/include/linux/etherdevice.h], [ether_addr_copy])
+
+   OVS_GREP_IFELSE([$KSRC/include/linux/if_vlan.h], [vlan_set_encap_proto])
++  OVS_GREP_IFELSE([$KSRC/include/linux/if_vlan.h], [vlan_hwaccel_push_inside])
+
+   OVS_GREP_IFELSE([$KSRC/include/linux/in.h], [ipv4_is_multicast])
+   OVS_GREP_IFELSE([$KSRC/include/net/ip.h], [__ip_select_ident.*dst_entry],
+--- openvswitch-2.4.0/datapath/linux/compat/include/linux/if_vlan.h   2015-08-12 02:08:17.439292814 +0530
++++ openvswitch-2.4.0-1ad-3.18/datapath/linux/compat/include/linux/if_vlan.h             2015-11-03 17:18:54.176216700 +0530
+@@ -52,7 +52,7 @@
+}
+#endif
+-#if LINUX_VERSION_CODE < KERNEL_VERSION(3,19,0)
++#ifndef HAVE_VLAN_HWACCEL_PUSH_INSIDE
+/*
+  * __vlan_hwaccel_push_inside - pushes vlan tag to the payload
+  * @skb: skbuff to tag
+

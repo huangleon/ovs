@@ -1,0 +1,54 @@
+From patchwork Wed Feb 17 11:58:26 2016
+Content-Type: text/plain; charset="utf-8"
+MIME-Version: 1.0
+Content-Transfer-Encoding: 7bit
+Subject: [ovs-dev,2/2] : 802.1ad support in OVS & OVS-DPDK
+From: gayathri.manepalli@wipro.com
+X-Patchwork-Id: 584080
+Message-Id: <TY1PR0301MB10569C92626203BAA768F8EC8EAE0@TY1PR0301MB1056.apcprd03.prod.outlook.com>
+To: <dev@openvswitch.org>
+Date: Wed, 17 Feb 2016 11:58:26 +0000
+
+Hi All,
+Below is the patch for 802.1ad support in OVS-DPDK which is extension to below patch,
+https://patchwork.ozlabs.org/patch/584074/       // Patch for plain OVS
+Signed-off-by: Manepalli S Gayathri  <gayathri.manepalli@wipro.com<mailto:gayathri.manepalli@wipro.com>>
+---
+For configuration details, please refer first part of patch (https://patchwork.ozlabs.org/patch/584074/)
+
+     cycles_count_start(pmd);
+     error = netdev_rxq_recv(rxq, packets, &cnt);
+     cycles_count_end(pmd, PMD_CYCLES_POLLING);
+-    if (!error) {
++    if (!error)
++    {
+         int i;
+         *recirc_depth_get() = 0;
+
+
+Thanks & Regards,
+Gayathri
+
+
+The information contained in this electronic message and any attachments to this message are intended for the exclusive use of the addressee(s) and may contain proprietary, confidential or privileged information. If you are not the intended recipient, you should not disseminate, distribute or copy this e-mail. Please notify the sender immediately and destroy all copies of this message and any attachments. WARNING: Computer viruses can be transmitted via email. The recipient should check this email and any attachments for the presence of viruses. The company accepts no liability for any damage caused by any virus transmitted by this email. www.wipro.com
+
+--- openvswitch-2.4.0-1ad-3.18/lib/odp-execute.c           2015-11-25 17:05:17.204045591 +0530
++++ openvswitch-2.4.0-1ad-3.18-new/lib/odp-execute.c              2015-11-24 17:38:02.871908927 +0530
+@@ -561,9 +561,14 @@
+             break;
+         }
+-        case OVS_ACTION_ATTR_PUSH_1ADVLAN:  //to be handled for DPDK mode
+-             break;
++        case OVS_ACTION_ATTR_PUSH_1ADVLAN: {//to be handled for DPDK mode
++                 const struct ovs_action_push_vlan *vlan1 = nl_attr_get(a);
++            for (i = 0; i < cnt; i++) {
++                eth_push_vlan(packets[i], vlan1->vlan_tpid, vlan1->vlan_tci);
++            }
++            break;
++        }
+         case OVS_ACTION_ATTR_POP_VLAN:
+             for (i = 0; i < cnt; i++) {
+                 eth_pop_vlan(packets[i]);
+--- openvswitch-2.4.0-1ad-3.18/lib/dpif-netdev.c             2015-11-03 17:18:53.000000000 +0530
++++ openvswitch-2.4.0-1ad-3.18-new/lib/dpif-netdev.c                2015-11-21 00:05:50.042204761 +0530
+@@ -2519,7 +2519,8 @@
