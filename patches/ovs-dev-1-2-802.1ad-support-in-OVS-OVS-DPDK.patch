@@ -655,7 +655,6 @@ commit_mpls_action(const struct flow *flow, struct flow *base,
 +
 +
 
-
  /* ofproto-dpif interface.
   *
 --- openvswitch-2.4.0/ofproto/ofproto-dpif-xlate.h        2015-08-21 05:48:21.874479265 +0530
@@ -758,11 +757,11 @@ void xlate_bundle_remove(struct ofbundle *);
 
 --- openvswitch-2.4.0/.travis.yml              2015-08-21 05:48:20.842479290 +0530
 +++ openvswitch-2.4.0-1ad-3.18/.travis.yml        2015-11-03 17:18:54.227216699 +0530
-@@ -13,7 +13,7 @@
+@@ -25,7 +25,7 @@
    - KERNEL=4.0.2
    - KERNEL=3.17.7 DPDK=1
    - KERNEL=3.17.7 DPDK=1 OPTS="--enable-shared"
--  - KERNEL=3.17.7
+-  - KERNEL=3.18.21
 +  - KERNEL=3.18.22
    - KERNEL=3.16.7
    - KERNEL=3.14.27
