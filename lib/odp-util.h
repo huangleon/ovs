@@ -203,7 +203,7 @@ enum slow_path_reason commit_odp_actions(const struct flow *,
                                          struct ofpbuf *odp_actions,
                                          struct flow_wildcards *wc,
                                          bool use_masked);
-
+
 /* ofproto-dpif interface.
  *
  * The following types and functions are logically part of ofproto-dpif.
