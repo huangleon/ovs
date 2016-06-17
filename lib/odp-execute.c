@@ -561,8 +561,13 @@ odp_execute_actions(void *dp, struct dp_packet **packets, int cnt, bool steal,
             break;
         }
 
-        case OVS_ACTION_ATTR_PUSH_1ADVLAN:  //to be handled via openflow mode
-             break;
+        case OVS_ACTION_ATTR_PUSH_1ADVLAN: {//to be handled for DPDK mode
+                 const struct ovs_action_push_vlan *vlan1 = nl_attr_get(a);
+            for (i = 0; i < cnt; i++) {
+                eth_push_vlan(packets[i], vlan1->vlan_tpid, vlan1->vlan_tci);
+            }
+            break;
+        }
 
         case OVS_ACTION_ATTR_POP_VLAN:
             for (i = 0; i < cnt; i++) {
