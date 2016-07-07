@@ -25,6 +25,7 @@
 #include <linux/etherdevice.h>
 #include <linux/if_ether.h>
 #include <linux/if_vlan.h>
+#include "if_vlan_ext.h"
 #include <net/llc_pdu.h>
 #include <linux/kernel.h>
 #include <linux/jhash.h>
