@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007-2015 Nicira, Inc.
+ * Copyright (c) 2007-2011 Nicira, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of version 2 of the GNU General Public
@@ -33,7 +33,4 @@ int __init ovs_netdev_init(void);
 void ovs_netdev_exit(void);
 
 void ovs_netdev_tunnel_destroy(struct vport *vport);
-
-void netdev_port_receive(struct sk_buff *skb, struct ip_tunnel_info *tun_info);
-
 #endif /* vport_netdev.h */

@@ -32,7 +32,6 @@
 #include <net/rtnetlink.h>
 
 #include "datapath.h"
-#include "gso.h"
 #include "vport.h"
 #include "vport-internal_dev.h"
 #include "vport-netdev.h"
@@ -40,7 +39,7 @@
 static struct vport_ops ovs_netdev_vport_ops;
 
 /* Must be called with rcu_read_lock. */
-void netdev_port_receive(struct sk_buff *skb, struct ip_tunnel_info *tun_info)
+static void netdev_port_receive(struct sk_buff *skb)
 {
 	struct vport *vport;
 
@@ -60,7 +59,7 @@ void netdev_port_receive(struct sk_buff *skb, struct ip_tunnel_info *tun_info)
 
 	skb_push(skb, ETH_HLEN);
 	ovs_skb_postpush_rcsum(skb, skb->data, ETH_HLEN);
-	ovs_vport_receive(vport, skb, tun_info);
+	ovs_vport_receive(vport, skb, skb_tunnel_info(skb));
 	return;
 error:
 	kfree_skb(skb);
@@ -74,11 +73,7 @@ static rx_handler_result_t netdev_frame_hook(struct sk_buff **pskb)
 	if (unlikely(skb->pkt_type == PACKET_LOOPBACK))
 		return RX_HANDLER_PASS;
 
-#ifndef HAVE_METADATA_DST
-	netdev_port_receive(skb, NULL);
-#else
-	netdev_port_receive(skb, skb_tunnel_info(skb));
-#endif
+	netdev_port_receive(skb);
 	return RX_HANDLER_CONSUMED;
 }
 
@@ -185,13 +180,9 @@ void ovs_netdev_tunnel_destroy(struct vport *vport)
 	if (vport->dev->priv_flags & IFF_OVS_DATAPATH)
 		ovs_netdev_detach_dev(vport);
 
-	/* We can be invoked by both explicit vport deletion and
-	 * underlying netdev deregistration; delete the link only
-	 * if it's not already shutting down.
-	 */
-	if (vport->dev->reg_state == NETREG_REGISTERED)
-		rtnl_delete_link(vport->dev);
+	/* Early release so we can unregister the device */
 	dev_put(vport->dev);
+	rtnl_delete_link(vport->dev);
 	vport->dev = NULL;
 	rtnl_unlock();
 

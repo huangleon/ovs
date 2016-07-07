@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007-2015 Nicira, Inc.
+ * Copyright (c) 2007-2014 Nicira, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of version 2 of the GNU General Public
@@ -36,7 +36,6 @@
 #include <linux/rcupdate.h>
 #include <linux/tcp.h>
 #include <linux/udp.h>
-#include <linux/version.h>
 #include <linux/ethtool.h>
 #include <linux/wait.h>
 #include <asm/div64.h>
@@ -53,11 +52,9 @@
 #include <net/netns/generic.h>
 
 #include "datapath.h"
-#include "conntrack.h"
 #include "flow.h"
 #include "flow_table.h"
 #include "flow_netlink.h"
-#include "gso.h"
 #include "vport-internal_dev.h"
 #include "vport-netdev.h"
 
@@ -70,21 +67,20 @@ static struct genl_family dp_datapath_genl_family;
 
 static const struct nla_policy flow_policy[];
 
-static struct genl_multicast_group ovs_dp_flow_multicast_group = {
-	.name = OVS_FLOW_MCGROUP
+static const struct genl_multicast_group ovs_dp_flow_multicast_group = {
+	.name = OVS_FLOW_MCGROUP,
 };
 
-static struct genl_multicast_group ovs_dp_datapath_multicast_group = {
-	.name = OVS_DATAPATH_MCGROUP
+static const struct genl_multicast_group ovs_dp_datapath_multicast_group = {
+	.name = OVS_DATAPATH_MCGROUP,
 };
 
-struct genl_multicast_group ovs_dp_vport_multicast_group = {
-	.name = OVS_VPORT_MCGROUP
+static const struct genl_multicast_group ovs_dp_vport_multicast_group = {
+	.name = OVS_VPORT_MCGROUP,
 };
 
 /* Check if need to build a reply message.
- * OVS userspace sets the NLM_F_ECHO flag if it needs the reply.
- */
+ * OVS userspace sets the NLM_F_ECHO flag if it needs the reply. */
 static bool ovs_must_notify(struct genl_family *family, struct genl_info *info,
 			    unsigned int group)
 {
@@ -92,11 +88,10 @@ static bool ovs_must_notify(struct genl_family *family, struct genl_info *info,
 	       genl_has_listeners(family, genl_info_net(info), group);
 }
 
-static void ovs_notify(struct genl_family *family, struct genl_multicast_group *grp,
+static void ovs_notify(struct genl_family *family,
 		       struct sk_buff *skb, struct genl_info *info)
 {
-	genl_notify(family, skb, genl_info_net(info),
-		    info->snd_portid, GROUP_ID(grp), info->nlhdr, GFP_KERNEL);
+	genl_notify(family, skb, info, 0, GFP_KERNEL);
 }
 
 /**
@@ -139,6 +134,7 @@ int lockdep_ovsl_is_held(void)
 EXPORT_SYMBOL_GPL(lockdep_ovsl_is_held);
 #endif
 
+static struct vport *new_vport(const struct vport_parms *);
 static int queue_gso_packets(struct datapath *dp, struct sk_buff *,
 			     const struct sw_flow_key *,
 			     const struct dp_upcall_info *);
@@ -270,8 +266,7 @@ void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key)
 	stats = this_cpu_ptr(dp->stats_percpu);
 
 	/* Look up flow. */
-	flow = ovs_flow_tbl_lookup_stats(&dp->table, key, skb_get_hash(skb),
-					 &n_mask_hit);
+	flow = ovs_flow_tbl_lookup_stats(&dp->table, key, &n_mask_hit);
 	if (unlikely(!flow)) {
 		struct dp_upcall_info upcall;
 		int error;
@@ -431,9 +426,7 @@ static int queue_userspace_packet(struct datapath *dp, struct sk_buff *skb,
 	struct sk_buff *user_skb = NULL; /* to be queued to userspace */
 	struct nlattr *nla;
 	struct genl_info info = {
-#ifdef HAVE_GENLMSG_NEW_UNICAST
 		.dst_sk = ovs_dp_get_net(dp)->genl_sock,
-#endif
 		.snd_portid = upcall_info->portid,
 	};
 	size_t len;
@@ -494,12 +487,10 @@ static int queue_userspace_packet(struct datapath *dp, struct sk_buff *skb,
 			  nla_len(upcall_info->userdata),
 			  nla_data(upcall_info->userdata));
 
-
 	if (upcall_info->egress_tun_info) {
 		nla = nla_nest_start(user_skb, OVS_PACKET_ATTR_EGRESS_TUN_KEY);
-		err = ovs_nla_put_egress_tunnel_key(user_skb,
-						    upcall_info->egress_tun_info,
-						    upcall_info->egress_tun_opts);
+		err = ovs_nla_put_tunnel_info(user_skb,
+					      upcall_info->egress_tun_info);
 		BUG_ON(err);
 		nla_nest_end(user_skb, nla);
 	}
@@ -526,8 +517,7 @@ static int queue_userspace_packet(struct datapath *dp, struct sk_buff *skb,
 	}
 
 	/* Only reserve room for attribute header, packet data is added
-	 * in skb_zerocopy()
-	 */
+	 * in skb_zerocopy() */
 	if (!(nla = nla_reserve(user_skb, OVS_PACKET_ATTR_PACKET, 0))) {
 		err = -ENOBUFS;
 		goto out;
@@ -589,8 +579,7 @@ static int ovs_packet_cmd_execute(struct sk_buff *skb, struct genl_info *info)
 
 	/* Normally, setting the skb 'protocol' field would be handled by a
 	 * call to eth_type_trans(), but it assumes there's a sending
-	 * device, which we may not have.
-	 */
+	 * device, which we may not have. */
 	if (eth_proto_is_802_3(eth->h_proto))
 		packet->protocol = eth->h_proto;
 	else
@@ -666,7 +655,7 @@ static const struct nla_policy packet_policy[OVS_PACKET_ATTR_MAX + 1] = {
 	[OVS_PACKET_ATTR_MRU] = { .type = NLA_U16 },
 };
 
-static struct genl_ops dp_packet_genl_ops[] = {
+static const struct genl_ops dp_packet_genl_ops[] = {
 	{ .cmd = OVS_PACKET_CMD_EXECUTE,
 	  .flags = GENL_ADMIN_PERM, /* Requires CAP_NET_ADMIN privilege. */
 	  .policy = packet_policy,
@@ -886,8 +875,7 @@ static struct sk_buff *ovs_flow_cmd_alloc_info(const struct sw_flow_actions *act
 	struct sk_buff *skb;
 	size_t len;
 
-	if (!always && !ovs_must_notify(&dp_flow_genl_family, info,
-					GROUP_ID(&ovs_dp_flow_multicast_group)))
+	if (!always && !ovs_must_notify(&dp_flow_genl_family, info, 0))
 		return NULL;
 
 	len = ovs_flow_cmd_msg_size(acts, sfid, ufid_flags);
@@ -1065,7 +1053,7 @@ static int ovs_flow_cmd_new(struct sk_buff *skb, struct genl_info *info)
 	}
 
 	if (reply)
-		ovs_notify(&dp_flow_genl_family, &ovs_dp_flow_multicast_group, reply, info);
+		ovs_notify(&dp_flow_genl_family, reply, info);
 	return 0;
 
 err_unlock_ovs:
@@ -1199,7 +1187,7 @@ static int ovs_flow_cmd_set(struct sk_buff *skb, struct genl_info *info)
 	ovs_unlock();
 
 	if (reply)
-		ovs_notify(&dp_flow_genl_family, &ovs_dp_flow_multicast_group, reply, info);
+		ovs_notify(&dp_flow_genl_family, reply, info);
 	if (old_acts)
 		ovs_nla_free_flow_actions_rcu(old_acts);
 
@@ -1322,9 +1310,8 @@ static int ovs_flow_cmd_del(struct sk_buff *skb, struct genl_info *info)
 	ovs_flow_tbl_remove(&dp->table, flow);
 	ovs_unlock();
 
-	reply = ovs_flow_cmd_alloc_info(rcu_dereference_raw(flow->sf_acts),
+	reply = ovs_flow_cmd_alloc_info((const struct sw_flow_actions __force *) flow->sf_acts,
 					&flow->id, info, false, ufid_flags);
-
 	if (likely(reply)) {
 		if (likely(!IS_ERR(reply))) {
 			rcu_read_lock();	/*To keep RCU checker happy. */
@@ -1335,11 +1322,10 @@ static int ovs_flow_cmd_del(struct sk_buff *skb, struct genl_info *info)
 						     ufid_flags);
 			rcu_read_unlock();
 			BUG_ON(err < 0);
-			ovs_notify(&dp_flow_genl_family, &ovs_dp_flow_multicast_group, reply, info);
-		} else {
-			genl_set_err(&dp_flow_genl_family, sock_net(skb->sk), 0,
-				     GROUP_ID(&ovs_dp_flow_multicast_group), PTR_ERR(reply));
 
+			ovs_notify(&dp_flow_genl_family, reply, info);
+		} else {
+			netlink_set_err(sock_net(skb->sk)->genl_sock, 0, 0, PTR_ERR(reply));
 		}
 	}
 
@@ -1406,7 +1392,7 @@ static const struct nla_policy flow_policy[OVS_FLOW_ATTR_MAX + 1] = {
 	[OVS_FLOW_ATTR_UFID_FLAGS] = { .type = NLA_U32 },
 };
 
-static struct genl_ops dp_flow_genl_ops[] = {
+static const struct genl_ops dp_flow_genl_ops[] = {
 	{ .cmd = OVS_FLOW_CMD_NEW,
 	  .flags = GENL_ADMIN_PERM, /* Requires CAP_NET_ADMIN privilege. */
 	  .policy = flow_policy,
@@ -1625,7 +1611,7 @@ static int ovs_dp_cmd_new(struct sk_buff *skb, struct genl_info *info)
 
 	ovs_unlock();
 
-	ovs_notify(&dp_datapath_genl_family, &ovs_dp_datapath_multicast_group, reply, info);
+	ovs_notify(&dp_datapath_genl_family, reply, info);
 	return 0;
 
 err_destroy_ports_array:
@@ -1691,7 +1677,8 @@ static int ovs_dp_cmd_del(struct sk_buff *skb, struct genl_info *info)
 	__dp_destroy(dp);
 	ovs_unlock();
 
-	ovs_notify(&dp_datapath_genl_family, &ovs_dp_datapath_multicast_group, reply, info);
+	ovs_notify(&dp_datapath_genl_family, reply, info);
+
 	return 0;
 
 err_unlock_free:
@@ -1723,8 +1710,8 @@ static int ovs_dp_cmd_set(struct sk_buff *skb, struct genl_info *info)
 	BUG_ON(err < 0);
 
 	ovs_unlock();
+	ovs_notify(&dp_datapath_genl_family, reply, info);
 
-	ovs_notify(&dp_datapath_genl_family, &ovs_dp_datapath_multicast_group, reply, info);
 	return 0;
 
 err_unlock_free:
@@ -1791,7 +1778,7 @@ static const struct nla_policy datapath_policy[OVS_DP_ATTR_MAX + 1] = {
 	[OVS_DP_ATTR_USER_FEATURES] = { .type = NLA_U32 },
 };
 
-static struct genl_ops dp_datapath_genl_ops[] = {
+static const struct genl_ops dp_datapath_genl_ops[] = {
 	{ .cmd = OVS_DP_CMD_NEW,
 	  .flags = GENL_ADMIN_PERM, /* Requires CAP_NET_ADMIN privilege. */
 	  .policy = datapath_policy,
@@ -1996,7 +1983,7 @@ restart:
 	BUG_ON(err < 0);
 	ovs_unlock();
 
-	ovs_notify(&dp_vport_genl_family, &ovs_dp_vport_multicast_group, reply, info);
+	ovs_notify(&dp_vport_genl_family, reply, info);
 	return 0;
 
 exit_unlock_free:
@@ -2034,6 +2021,7 @@ static int ovs_vport_cmd_set(struct sk_buff *skb, struct genl_info *info)
 			goto exit_unlock_free;
 	}
 
+
 	if (a[OVS_VPORT_ATTR_UPCALL_PID]) {
 		struct nlattr *ids = a[OVS_VPORT_ATTR_UPCALL_PID];
 
@@ -2045,9 +2033,9 @@ static int ovs_vport_cmd_set(struct sk_buff *skb, struct genl_info *info)
 	err = ovs_vport_cmd_fill_info(vport, reply, info->snd_portid,
 				      info->snd_seq, 0, OVS_VPORT_CMD_NEW);
 	BUG_ON(err < 0);
-	ovs_unlock();
 
-	ovs_notify(&dp_vport_genl_family, &ovs_dp_vport_multicast_group, reply, info);
+	ovs_unlock();
+	ovs_notify(&dp_vport_genl_family, reply, info);
 	return 0;
 
 exit_unlock_free:
@@ -2084,7 +2072,7 @@ static int ovs_vport_cmd_del(struct sk_buff *skb, struct genl_info *info)
 	ovs_dp_detach_port(vport);
 	ovs_unlock();
 
-	ovs_notify(&dp_vport_genl_family, &ovs_dp_vport_multicast_group, reply, info);
+	ovs_notify(&dp_vport_genl_family, reply, info);
 	return 0;
 
 exit_unlock_free:
@@ -2171,7 +2159,7 @@ static const struct nla_policy vport_policy[OVS_VPORT_ATTR_MAX + 1] = {
 	[OVS_VPORT_ATTR_OPTIONS] = { .type = NLA_NESTED },
 };
 
-static struct genl_ops dp_vport_genl_ops[] = {
+static const struct genl_ops dp_vport_genl_ops[] = {
 	{ .cmd = OVS_VPORT_CMD_NEW,
 	  .flags = GENL_ADMIN_PERM, /* Requires CAP_NET_ADMIN privilege. */
 	  .policy = vport_policy,
@@ -2209,7 +2197,7 @@ struct genl_family dp_vport_genl_family = {
 	.n_mcgrps = 1,
 };
 
-static struct genl_family *dp_genl_families[] = {
+static struct genl_family * const dp_genl_families[] = {
 	&dp_datapath_genl_family,
 	&dp_vport_genl_family,
 	&dp_flow_genl_family,
@@ -2266,7 +2254,6 @@ static void __net_exit list_vports_from_net(struct net *net, struct net *dnet,
 			struct vport *vport;
 
 			hlist_for_each_entry(vport, &dp->ports[i], dp_hash_node) {
-
 				if (vport->ops->type != OVS_VPORT_TYPE_INTERNAL)
 					continue;
 
@@ -2319,15 +2306,11 @@ static int __init dp_init(void)
 
 	BUILD_BUG_ON(sizeof(struct ovs_skb_cb) > FIELD_SIZEOF(struct sk_buff, cb));
 
-	pr_info("Open vSwitch switching datapath %s\n", VERSION);
-
-	err = compat_init();
-	if (err)
-		goto error;
+	pr_info("Open vSwitch switching datapath\n");
 
 	err = action_fifos_init();
 	if (err)
-		goto error_compat_exit;
+		goto error;
 
 	err = ovs_internal_dev_rtnl_link_register();
 	if (err)
@@ -2373,8 +2356,6 @@ error_unreg_rtnl_link:
 	ovs_internal_dev_rtnl_link_unregister();
 error_action_fifos_exit:
 	action_fifos_exit();
-error_compat_exit:
-	compat_exit();
 error:
 	return err;
 }
@@ -2390,7 +2371,6 @@ static void dp_cleanup(void)
 	ovs_flow_exit();
 	ovs_internal_dev_rtnl_link_unregister();
 	action_fifos_exit();
-	compat_exit();
 }
 
 module_init(dp_init);
@@ -2398,4 +2378,3 @@ module_exit(dp_cleanup);
 
 MODULE_DESCRIPTION("Open vSwitch switching datapath");
 MODULE_LICENSE("GPL");
-MODULE_VERSION(VERSION);

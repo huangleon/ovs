@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007-2015 Nicira, Inc.
+ * Copyright (c) 2007-2014 Nicira, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of version 2 of the GNU General Public
@@ -27,18 +27,10 @@
 #include <linux/rcupdate.h>
 #include <linux/rtnetlink.h>
 #include <linux/compat.h>
-#include <linux/module.h>
-#include <linux/if_link.h>
 #include <net/net_namespace.h>
-#include <net/lisp.h>
-#include <net/gre.h>
-#include <net/geneve.h>
-#include <net/route.h>
-#include <net/stt.h>
-#include <net/vxlan.h>
+#include <linux/module.h>
 
 #include "datapath.h"
-#include "gso.h"
 #include "vport.h"
 #include "vport-internal_dev.h"
 
@@ -55,42 +47,12 @@ static struct hlist_head *dev_table;
  */
 int ovs_vport_init(void)
 {
-	int err;
-
 	dev_table = kzalloc(VPORT_HASH_BUCKETS * sizeof(struct hlist_head),
 			    GFP_KERNEL);
 	if (!dev_table)
 		return -ENOMEM;
 
-	err = lisp_init_module();
-	if (err)
-		goto err_lisp;
-	err = ipgre_init();
-	if (err)
-		goto err_gre;
-	err = geneve_init_module();
-	if (err)
-		goto err_geneve;
-
-	err = vxlan_init_module();
-	if (err)
-		goto err_vxlan;
-	err = ovs_stt_init_module();
-	if (err)
-		goto err_stt;
 	return 0;
-
-err_stt:
-	vxlan_cleanup_module();
-err_vxlan:
-	geneve_cleanup_module();
-err_geneve:
-	ipgre_fini();
-err_gre:
-	lisp_cleanup_module();
-err_lisp:
-	kfree(dev_table);
-	return err;
 }
 
 /**
@@ -100,11 +62,6 @@ err_lisp:
  */
 void ovs_vport_exit(void)
 {
-	ovs_stt_cleanup_module();
-	vxlan_cleanup_module();
-	geneve_cleanup_module();
-	ipgre_fini();
-	lisp_cleanup_module();
 	kfree(dev_table);
 }
 
@@ -114,7 +71,7 @@ static struct hlist_head *hash_bucket(const struct net *net, const char *name)
 	return &dev_table[hash & (VPORT_HASH_BUCKETS - 1)];
 }
 
-int __ovs_vport_ops_register(struct vport_ops *ops)
+int ovs_vport_ops_register(struct vport_ops *ops)
 {
 	int err = -EEXIST;
 	struct vport_ops *o;
@@ -130,7 +87,7 @@ errout:
 	ovs_unlock();
 	return err;
 }
-EXPORT_SYMBOL_GPL(__ovs_vport_ops_register);
+EXPORT_SYMBOL_GPL(ovs_vport_ops_register);
 
 void ovs_vport_ops_unregister(struct vport_ops *ops)
 {
@@ -299,8 +256,8 @@ int ovs_vport_set_options(struct vport *vport, struct nlattr *options)
  *
  * @vport: vport to delete.
  *
- * Detaches @vport from its datapath and destroys it.  ovs_mutex must be
- * held.
+ * Detaches @vport from its datapath and destroys it.  It is possible to fail
+ * for reasons such as lack of memory.  ovs_mutex must be held.
  */
 void ovs_vport_del(struct vport *vport)
 {
@@ -496,8 +453,6 @@ int ovs_vport_receive(struct vport *vport, struct sk_buff *skb,
 		tun_info = NULL;
 	}
 
-	ovs_skb_init_inner_protocol(skb);
-	skb_clear_ovs_gso_cb(skb);
 	/* Extract flow from 'skb' into 'key'. */
 	error = ovs_flow_key_extract(tun_info, skb, &key);
 	if (unlikely(error)) {
@@ -525,88 +480,13 @@ void ovs_vport_deferred_free(struct vport *vport)
 }
 EXPORT_SYMBOL_GPL(ovs_vport_deferred_free);
 
-static struct rtable *ovs_tunnel_route_lookup(struct net *net,
-					      const struct ip_tunnel_key *key,
-					      u32 mark,
-					      struct flowi4 *fl,
-					      u8 protocol)
-{
-	struct rtable *rt;
-
-	memset(fl, 0, sizeof(*fl));
-	fl->daddr = key->u.ipv4.dst;
-	fl->saddr = key->u.ipv4.src;
-	fl->flowi4_tos = RT_TOS(key->tos);
-	fl->flowi4_mark = mark;
-	fl->flowi4_proto = protocol;
-
-	rt = ip_route_output_key(net, fl);
-	return rt;
-}
-
-int ovs_tunnel_get_egress_info(struct dp_upcall_info *upcall,
-			       struct net *net,
-			       struct sk_buff *skb,
-			       u8 ipproto,
-			       __be16 tp_src,
-			       __be16 tp_dst)
-{
-	struct ip_tunnel_info *egress_tun_info = upcall->egress_tun_info;
-	struct ip_tunnel_info *tun_info = skb_tunnel_info(skb);
-	const struct ip_tunnel_key *tun_key;
-	u32 skb_mark = skb->mark;
-	struct rtable *rt;
-	struct flowi4 fl;
-
-	if (unlikely(!tun_info))
-		return -EINVAL;
-	if (ip_tunnel_info_af(tun_info) != AF_INET)
-		return -EINVAL;
-
-	tun_key = &tun_info->key;
-
-	/* Route lookup to get srouce IP address.
-	 * The process may need to be changed if the corresponding process
-	 * in vports ops changed.
-	 */
-	rt = ovs_tunnel_route_lookup(net, tun_key, skb_mark, &fl, ipproto);
-	if (IS_ERR(rt))
-		return PTR_ERR(rt);
-
-	ip_rt_put(rt);
-
-	/* Generate egress_tun_info based on tun_info,
-	 * saddr, tp_src and tp_dst
-	 */
-	ip_tunnel_key_init(&egress_tun_info->key,
-			   fl.saddr, tun_key->u.ipv4.dst,
-			   tun_key->tos,
-			   tun_key->ttl,
-			   tp_src, tp_dst,
-			   tun_key->tun_id,
-			   tun_key->tun_flags);
-	egress_tun_info->options_len = tun_info->options_len;
-	egress_tun_info->mode = tun_info->mode;
-	upcall->egress_tun_opts = ip_tunnel_info_opts(tun_info);
-	return 0;
-}
-EXPORT_SYMBOL_GPL(ovs_tunnel_get_egress_info);
-
-int ovs_vport_get_egress_tun_info(struct vport *vport, struct sk_buff *skb,
-				  struct dp_upcall_info *upcall)
-{
-	/* get_egress_tun_info() is only implemented on tunnel ports. */
-	if (unlikely(!vport->ops->get_egress_tun_info))
-		return -EINVAL;
-
-	return vport->ops->get_egress_tun_info(vport, skb, upcall);
-}
-
 static unsigned int packet_length(const struct sk_buff *skb)
 {
 	unsigned int length = skb->len - ETH_HLEN;
 
-	if (skb->protocol == htons(ETH_P_8021Q))
+	if (eth_type_vlan(skb->protocol))
+		length -= VLAN_HLEN;
+	if (skb->protocol == htons(ETH_P_8021AD))
 		length -= VLAN_HLEN;
 
 	return length;

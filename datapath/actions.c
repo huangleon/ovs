@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007-2015 Nicira, Inc.
+ * Copyright (c) 2007-2014 Nicira, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of version 2 of the GNU General Public
@@ -33,14 +33,15 @@
 #include <net/dst.h>
 #include <net/ip.h>
 #include <net/ipv6.h>
+#include <net/ip6_fib.h>
 #include <net/checksum.h>
 #include <net/dsfield.h>
 #include <net/mpls.h>
 #include <net/sctp/checksum.h>
 
 #include "datapath.h"
+#include "flow.h"
 #include "conntrack.h"
-#include "gso.h"
 #include "vport.h"
 
 static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
@@ -59,7 +60,7 @@ struct deferred_action {
 struct ovs_frag_data {
 	unsigned long dst;
 	struct vport *vport;
-	struct ovs_gso_cb cb;
+	struct ovs_skb_cb cb;
 	__be16 inner_protocol;
 	__u16 vlan_tci;
 	__be16 vlan_proto;
@@ -78,9 +79,6 @@ struct action_fifo {
 };
 
 static struct action_fifo __percpu *action_fifos;
-#define EXEC_ACTIONS_LEVEL_LIMIT 4   /* limit used to detect packet
-				      *	looping by the network stack
-				      */
 static DEFINE_PER_CPU(int, exec_actions_level);
 
 static void action_fifo_init(struct action_fifo *fifo)
@@ -110,7 +108,7 @@ static struct deferred_action *action_fifo_put(struct action_fifo *fifo)
 	return &fifo->fifo[fifo->head++];
 }
 
-/* Return queue entry if fifo is not full */
+/* Return true if fifo is not full */
 static struct deferred_action *add_deferred_actions(struct sk_buff *skb,
 						    const struct sw_flow_key *key,
 						    const struct nlattr *attr)
@@ -166,8 +164,9 @@ static int push_mpls(struct sk_buff *skb, struct sw_flow_key *key,
 
 	hdr = eth_hdr(skb);
 	hdr->h_proto = mpls->mpls_ethertype;
-	if (!ovs_skb_get_inner_protocol(skb))
-		ovs_skb_set_inner_protocol(skb, skb->protocol);
+
+	if (!skb->inner_protocol)
+		skb_set_inner_protocol(skb, skb->protocol);
 	skb->protocol = mpls->mpls_ethertype;
 
 	invalidate_flow_key(key);
@@ -237,7 +236,8 @@ static int pop_vlan(struct sk_buff *skb, struct sw_flow_key *key)
 	if (skb_vlan_tag_present(skb))
 		invalidate_flow_key(key);
 	else
-		key->eth.tci = 0;
+		key->eth.vlan.tci = 0;
+		key->eth.vlan.tpid = 0;
 	return err;
 }
 
@@ -247,7 +247,8 @@ static int push_vlan(struct sk_buff *skb, struct sw_flow_key *key,
 	if (skb_vlan_tag_present(skb))
 		invalidate_flow_key(key);
 	else
-		key->eth.tci = vlan->vlan_tci;
+		key->eth.vlan.tci = vlan->vlan_tci;
+		key->eth.vlan.tpid = vlan->vlan_tpid;
 	return skb_vlan_push(skb, vlan->vlan_tpid,
 			     ntohs(vlan->vlan_tci) & ~VLAN_TAG_PRESENT);
 }
@@ -312,7 +313,6 @@ static void update_ip_l4_checksum(struct sk_buff *skb, struct iphdr *nh,
 			}
 		}
 	}
-
 }
 
 static void set_ip_addr(struct sk_buff *skb, struct iphdr *nh,
@@ -364,7 +364,7 @@ static void set_ipv6_addr(struct sk_buff *skb, u8 l4_proto,
 			  __be32 addr[4], const __be32 new_addr[4],
 			  bool recalculate_csum)
 {
-	if (likely(recalculate_csum))
+	if (recalculate_csum)
 		update_ipv6_checksum(skb, l4_proto, addr, new_addr);
 
 	skb_clear_hash(skb);
@@ -622,9 +622,9 @@ static int set_sctp(struct sk_buff *skb, struct sw_flow_key *flow_key,
 	return 0;
 }
 
-static int ovs_vport_output(OVS_VPORT_OUTPUT_PARAMS)
+static int ovs_vport_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
-	struct ovs_frag_data *data = get_pcpu_ptr(ovs_frag_data_storage);
+	struct ovs_frag_data *data = this_cpu_ptr(&ovs_frag_data_storage);
 	struct vport *vport = data->vport;
 
 	if (skb_cow_head(skb, data->l2_len) < 0) {
@@ -633,8 +633,8 @@ static int ovs_vport_output(OVS_VPORT_OUTPUT_PARAMS)
 	}
 
 	__skb_dst_copy(skb, data->dst);
-	*OVS_GSO_CB(skb) = data->cb;
-	ovs_skb_set_inner_protocol(skb, data->inner_protocol);
+	*OVS_CB(skb) = data->cb;
+	skb->inner_protocol = data->inner_protocol;
 	skb->vlan_tci = data->vlan_tci;
 	skb->vlan_proto = data->vlan_proto;
 
@@ -667,11 +667,11 @@ static void prepare_frag(struct vport *vport, struct sk_buff *skb)
 	unsigned int hlen = skb_network_offset(skb);
 	struct ovs_frag_data *data;
 
-	data = get_pcpu_ptr(ovs_frag_data_storage);
-	data->dst = (unsigned long) skb_dst(skb);
+	data = this_cpu_ptr(&ovs_frag_data_storage);
+	data->dst = skb->_skb_refdst;
 	data->vport = vport;
-	data->cb = *OVS_GSO_CB(skb);
-	data->inner_protocol = ovs_skb_get_inner_protocol(skb);
+	data->cb = *OVS_CB(skb);
+	data->inner_protocol = skb->inner_protocol;
 	data->vlan_tci = skb->vlan_tci;
 	data->vlan_proto = skb->vlan_proto;
 	data->l2_len = hlen;
@@ -681,8 +681,8 @@ static void prepare_frag(struct vport *vport, struct sk_buff *skb)
 	skb_pull(skb, hlen);
 }
 
-static void ovs_fragment(struct vport *vport, struct sk_buff *skb, u16 mru,
-			 __be16 ethertype)
+static void ovs_fragment(struct net *net, struct vport *vport,
+			 struct sk_buff *skb, u16 mru, __be16 ethertype)
 {
 	if (skb_network_offset(skb) > MAX_L2_LEN) {
 		OVS_NLERR(1, "L2 header too long to fragment");
@@ -698,11 +698,11 @@ static void ovs_fragment(struct vport *vport, struct sk_buff *skb, u16 mru,
 			 DST_OBSOLETE_NONE, DST_NOCOUNT);
 		ovs_dst.dev = vport->dev;
 
-		orig_dst = (unsigned long) skb_dst(skb);
+		orig_dst = skb->_skb_refdst;
 		skb_dst_set_noref(skb, &ovs_dst);
 		IPCB(skb)->frag_max_size = mru;
 
-		ip_do_fragment(skb->sk, skb, ovs_vport_output);
+		ip_do_fragment(net, skb->sk, skb, ovs_vport_output);
 		refdst_drop(orig_dst);
 	} else if (ethertype == htons(ETH_P_IPV6)) {
 		const struct nf_ipv6_ops *v6ops = nf_get_ipv6_ops();
@@ -719,11 +719,11 @@ static void ovs_fragment(struct vport *vport, struct sk_buff *skb, u16 mru,
 			 DST_OBSOLETE_NONE, DST_NOCOUNT);
 		ovs_rt.dst.dev = vport->dev;
 
-		orig_dst = (unsigned long) skb_dst(skb);
+		orig_dst = skb->_skb_refdst;
 		skb_dst_set_noref(skb, &ovs_rt.dst);
 		IP6CB(skb)->frag_max_size = mru;
 
-		v6ops->fragment(skb->sk, skb, ovs_vport_output);
+		v6ops->fragment(net, skb->sk, skb, ovs_vport_output);
 		refdst_drop(orig_dst);
 	} else {
 		WARN_ONCE(1, "Failed fragment ->%s: eth=%04x, MRU=%d, MTU=%d.",
@@ -748,29 +748,29 @@ static void do_output(struct datapath *dp, struct sk_buff *skb, int out_port,
 		if (likely(!mru || (skb->len <= mru + ETH_HLEN))) {
 			ovs_vport_send(vport, skb);
 		} else if (mru <= vport->dev->mtu) {
+			struct net *net = read_pnet(&dp->net);
 			__be16 ethertype = key->eth.type;
 
 			if (!is_flow_key_valid(key)) {
 				if (eth_p_mpls(skb->protocol))
-					ethertype = ovs_skb_get_inner_protocol(skb);
+					ethertype = skb->inner_protocol;
 				else
 					ethertype = vlan_get_protocol(skb);
 			}
 
-			ovs_fragment(vport, skb, mru, ethertype);
+			ovs_fragment(net, vport, skb, mru, ethertype);
 		} else {
-			OVS_NLERR(true, "Cannot fragment IP frames");
 			kfree_skb(skb);
 		}
 	} else {
 		kfree_skb(skb);
 	}
 }
+
 static int output_userspace(struct datapath *dp, struct sk_buff *skb,
 			    struct sw_flow_key *key, const struct nlattr *attr,
 			    const struct nlattr *actions, int actions_len)
 {
-	struct ip_tunnel_info info;
 	struct dp_upcall_info upcall;
 	const struct nlattr *a;
 	int rem;
@@ -798,11 +798,9 @@ static int output_userspace(struct datapath *dp, struct sk_buff *skb,
 			if (vport) {
 				int err;
 
-				upcall.egress_tun_info = &info;
-				err = ovs_vport_get_egress_tun_info(vport, skb,
-								    &upcall);
-				if (err)
-					upcall.egress_tun_info = NULL;
+				err = dev_fill_metadata_dst(vport->dev, skb);
+				if (!err)
+					upcall.egress_tun_info = skb_tunnel_info(skb);
 			}
 
 			break;
@@ -900,9 +898,9 @@ static int execute_set_action(struct sk_buff *skb,
 	if (nla_type(a) == OVS_KEY_ATTR_TUNNEL_INFO) {
 		struct ovs_tunnel_info *tun = nla_data(a);
 
-		ovs_skb_dst_drop(skb);
-		ovs_dst_hold((struct dst_entry *)tun->tun_dst);
-		ovs_skb_dst_set(skb, (struct dst_entry *)tun->tun_dst);
+		skb_dst_drop(skb);
+		dst_hold((struct dst_entry *)tun->tun_dst);
+		skb_dst_set(skb, (struct dst_entry *)tun->tun_dst);
 		return 0;
 	}
 
@@ -1114,8 +1112,8 @@ static int do_execute_actions(struct datapath *dp, struct sk_buff *skb,
 					     nla_data(a));
 
 			/* Hide stolen IP fragments from user space. */
-			if (err)
-				return err == -EINPROGRESS ? 0 : err;
+			if (err == -EINPROGRESS)
+				return 0;
 			break;
 		}
 
@@ -1167,15 +1165,6 @@ int ovs_execute_actions(struct datapath *dp, struct sk_buff *skb,
 	int level = this_cpu_read(exec_actions_level);
 	int err;
 
-	if (unlikely(level >= EXEC_ACTIONS_LEVEL_LIMIT)) {
-		if (net_ratelimit())
-			pr_warn("%s: packet loop detected, dropping.\n",
-				ovs_dp_name(dp));
-
-		kfree_skb(skb);
-		return -ELOOP;
-	}
-
 	this_cpu_inc(exec_actions_level);
 	err = do_execute_actions(dp, skb, key,
 				 acts->actions, acts->actions_len);
@@ -1184,11 +1173,6 @@ int ovs_execute_actions(struct datapath *dp, struct sk_buff *skb,
 		process_deferred_actions(dp);
 
 	this_cpu_dec(exec_actions_level);
-
-	/* This return status currently does not reflect the errors
-	 * encounted during deferred actions execution. Probably needs to
-	 * be fixed in the future.
-	 */
 	return err;
 }
 

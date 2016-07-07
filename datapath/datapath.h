@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007-2015 Nicira, Inc.
+ * Copyright (c) 2007-2014 Nicira, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of version 2 of the GNU General Public
@@ -25,10 +25,9 @@
 #include <linux/netdevice.h>
 #include <linux/skbuff.h>
 #include <linux/u64_stats_sync.h>
-#include <net/net_namespace.h>
 #include <net/ip_tunnels.h>
 
-#include "compat.h"
+#include "conntrack.h"
 #include "flow.h"
 #include "flow_table.h"
 
@@ -118,7 +117,6 @@ struct ovs_skb_cb {
  */
 struct dp_upcall_info {
 	struct ip_tunnel_info *egress_tun_info;
-	const void *egress_tun_opts;
 	const struct nlattr *userdata;
 	const struct nlattr *actions;
 	int actions_len;
@@ -158,12 +156,12 @@ int lockdep_ovsl_is_held(void);
 
 static inline struct net *ovs_dp_get_net(const struct datapath *dp)
 {
-	return rpl_read_pnet(&dp->net);
+	return read_pnet(&dp->net);
 }
 
 static inline void ovs_dp_set_net(struct datapath *dp, struct net *net)
 {
-	rpl_write_pnet(&dp->net, net);
+	write_pnet(&dp->net, net);
 }
 
 struct vport *ovs_lookup_vport(const struct datapath *dp, u16 port_no);
@@ -188,7 +186,6 @@ static inline struct vport *ovs_vport_ovsl(const struct datapath *dp, int port_n
 
 extern struct notifier_block ovs_dp_device_notifier;
 extern struct genl_family dp_vport_genl_family;
-extern struct genl_multicast_group ovs_dp_vport_multicast_group;
 
 void ovs_dp_process_packet(struct sk_buff *skb, struct sw_flow_key *key);
 void ovs_dp_detach_port(struct vport *);

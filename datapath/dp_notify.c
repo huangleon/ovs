@@ -18,7 +18,6 @@
 
 #include <linux/netdevice.h>
 #include <net/genetlink.h>
-#include <net/net_namespace.h>
 #include <net/netns/generic.h>
 
 #include "datapath.h"
@@ -31,19 +30,18 @@ static void dp_detach_port_notify(struct vport *vport)
 	struct datapath *dp;
 
 	dp = vport->dp;
-	notify = ovs_vport_cmd_build_info(vport, 0, 0, OVS_VPORT_CMD_DEL);
+	notify = ovs_vport_cmd_build_info(vport, 0, 0,
+					  OVS_VPORT_CMD_DEL);
 	ovs_dp_detach_port(vport);
 	if (IS_ERR(notify)) {
 		genl_set_err(&dp_vport_genl_family, ovs_dp_get_net(dp), 0,
-			     GROUP_ID(&ovs_dp_vport_multicast_group),
-			     PTR_ERR(notify));
+			     0, PTR_ERR(notify));
 		return;
 	}
 
 	genlmsg_multicast_netns(&dp_vport_genl_family,
 				ovs_dp_get_net(dp), notify, 0,
-				GROUP_ID(&ovs_dp_vport_multicast_group),
-				GFP_KERNEL);
+				0, GFP_KERNEL);
 }
 
 void ovs_dp_notify_wq(struct work_struct *work)
@@ -60,7 +58,7 @@ void ovs_dp_notify_wq(struct work_struct *work)
 			struct hlist_node *n;
 
 			hlist_for_each_entry_safe(vport, n, &dp->ports[i], dp_hash_node) {
-				if (vport->ops->type == OVS_VPORT_TYPE_INTERNAL)
+				if (vport->ops->type != OVS_VPORT_TYPE_NETDEV)
 					continue;
 
 				if (!(vport->dev->priv_flags & IFF_OVS_DATAPATH))

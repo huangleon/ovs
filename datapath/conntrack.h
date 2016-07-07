@@ -14,7 +14,6 @@
 #ifndef OVS_CONNTRACK_H
 #define OVS_CONNTRACK_H 1
 
-#include <linux/version.h>
 #include "flow.h"
 
 struct ovs_conntrack_info;
@@ -68,7 +67,6 @@ static inline int ovs_ct_execute(struct net *net, struct sk_buff *skb,
 				 struct sw_flow_key *key,
 				 const struct ovs_conntrack_info *info)
 {
-	kfree_skb(skb);
 	return -ENOTSUPP;
 }
 
@@ -90,5 +88,5 @@ static inline int ovs_ct_put_key(const struct sw_flow_key *key,
 static inline void ovs_ct_free_action(const struct nlattr *a) { }
 
 #define CT_SUPPORTED_MASK 0
-#endif
+#endif /* CONFIG_NF_CONNTRACK */
 #endif /* ovs_conntrack.h */

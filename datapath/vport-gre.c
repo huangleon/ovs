@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007-2015 Nicira, Inc.
+ * Copyright (c) 2007-2014 Nicira, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of version 2 of the GNU General Public
@@ -84,19 +84,12 @@ static struct vport *gre_create(const struct vport_parms *parms)
 	return ovs_netdev_link(vport, parms->name);
 }
 
-static int gre_get_egress_tun_info(struct vport *vport, struct sk_buff *skb,
-				   struct dp_upcall_info *upcall)
-{
-	return ovs_tunnel_get_egress_info(upcall, ovs_dp_get_net(vport->dp),
-					  skb, IPPROTO_GRE, 0, 0);
-}
-
 static struct vport_ops ovs_gre_vport_ops = {
 	.type		= OVS_VPORT_TYPE_GRE,
 	.create		= gre_create,
-	.send		= gre_fb_xmit,
-	.get_egress_tun_info	= gre_get_egress_tun_info,
+	.send		= dev_queue_xmit,
 	.destroy	= ovs_netdev_tunnel_destroy,
+	.owner		= THIS_MODULE,
 };
 
 static int __init ovs_gre_tnl_init(void)

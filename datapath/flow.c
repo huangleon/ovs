@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007-2015 Nicira, Inc.
+ * Copyright (c) 2007-2014 Nicira, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of version 2 of the GNU General Public
@@ -41,12 +41,13 @@
 #include <linux/icmpv6.h>
 #include <linux/rculist.h>
 #include <net/ip.h>
+#include <net/ip_tunnels.h>
 #include <net/ipv6.h>
 #include <net/mpls.h>
 #include <net/ndisc.h>
 
-#include "datapath.h"
 #include "conntrack.h"
+#include "datapath.h"
 #include "flow.h"
 #include "flow_netlink.h"
 #include "vport.h"
@@ -101,9 +102,9 @@ void ovs_flow_stats_update(struct sw_flow *flow, __be16 tcp_flags,
 
 				new_stats =
 					kmem_cache_alloc_node(flow_stats_cache,
-                                                              GFP_NOWAIT |
-                                                              __GFP_THISNODE |
-                                                              __GFP_NOWARN |
+							      GFP_NOWAIT |
+							      __GFP_THISNODE |
+							      __GFP_NOWARN |
 							      __GFP_NOMEMALLOC,
 							      node);
 				if (likely(new_stats)) {
@@ -272,8 +273,6 @@ static int parse_ipv6hdr(struct sk_buff *skb, struct sw_flow_key *key)
 	key->ipv6.addr.dst = nh->daddr;
 
 	payload_ofs = ipv6_skip_exthdr(skb, payload_ofs, &nexthdr, &frag_off);
-	if (unlikely(payload_ofs < 0))
-		return -EINVAL;
 
 	if (frag_off) {
 		if (frag_off & htons(~0x7))
@@ -283,6 +282,13 @@ static int parse_ipv6hdr(struct sk_buff *skb, struct sw_flow_key *key)
 	} else {
 		key->ip.frag = OVS_FRAG_TYPE_NONE;
 	}
+
+	/* Delayed handling of error in ipv6_skip_exthdr() as it
+	 * always sets frag_off to a valid value which may be
+	 * used to set key->ip.frag above.
+	 */
+	if (unlikely(payload_ofs < 0))
+		return -EPROTO;
 
 	nh_len = payload_ofs - nh_ofs;
 	skb_set_transport_header(skb, nh_ofs + nh_len);
@@ -296,24 +302,68 @@ static bool icmp6hdr_ok(struct sk_buff *skb)
 				  sizeof(struct icmp6hdr));
 }
 
-static int parse_vlan(struct sk_buff *skb, struct sw_flow_key *key)
-{
-	struct qtag_prefix {
-		__be16 eth_type; /* ETH_P_8021Q */
-		__be16 tci;
-	};
-	struct qtag_prefix *qp;
+/* Parse vlan tag from vlan header.
+ * Returns ERROR on memory error.
+ * Returns 0 if it encounters a non-vlan or incomplete packet.
+ * Returns 1 after successfully parsing vlan tag.
+ */
 
-	if (unlikely(skb->len < sizeof(struct qtag_prefix) + sizeof(__be16)))
+static int parse_vlan_tag(struct sk_buff *skb, struct vlan_head *vlan)
+{
+	struct vlan_head *qp = (struct vlan_head *)skb->data;
+
+	if (likely(!eth_type_vlan(qp->tpid)))
 		return 0;
 
-	if (unlikely(!pskb_may_pull(skb, sizeof(struct qtag_prefix) +
-					 sizeof(__be16))))
+	if (unlikely(skb->len < sizeof(struct vlan_head) + sizeof(__be16)))
+		return 0;
+
+	if (unlikely(!pskb_may_pull(skb, sizeof(struct vlan_head) +
+				 sizeof(__be16))))
 		return -ENOMEM;
 
-	qp = (struct qtag_prefix *) skb->data;
-	key->eth.tci = qp->tci | htons(VLAN_TAG_PRESENT);
-	__skb_pull(skb, sizeof(struct qtag_prefix));
+	vlan->tci = qp->tci | htons(VLAN_TAG_PRESENT);
+	vlan->tpid = qp->tpid;
+
+	__skb_pull(skb, sizeof(struct vlan_head));
+	return 1;
+}
+
+static int parse_vlan(struct sk_buff *skb, struct sw_flow_key *key)
+{
+	int res;
+
+	key->eth.vlan.tci = 0;
+	key->eth.vlan.tpid = 0;
+	key->eth.cvlan.tci = 0;
+	key->eth.cvlan.tpid = 0;
+
+	if (likely(skb_vlan_tag_present(skb))) {
+		key->eth.vlan.tci = htons(skb->vlan_tci);
+		key->eth.vlan.tpid = skb->vlan_proto;
+
+		/* Case where ingress processing has already stripped
+		 * the outer vlan tag.
+		 */
+		res = parse_vlan_tag(skb, &key->eth.cvlan);
+		if (res < 0)
+			return res;
+		/* For inner tag, return 0 because neither
+		 * non-existent nor partial inner tag is an error.
+		 */
+		return 0;
+	}
+	res = parse_vlan_tag(skb, &key->eth.vlan);
+	if (res <= 0)
+		/* This is an outer tag in the non-accelerated VLAN
+		 * case. Return error unless it is a complete vlan tag.
+		 */
+		return res;
+
+	/* Parse inner vlan tag if present for non-accelerated case. */
+	res = parse_vlan_tag(skb, &key->eth.cvlan);
+	if (res <= 0)
+		return res;
 
 	return 0;
 }
@@ -474,12 +524,8 @@ static int key_extract(struct sk_buff *skb, struct sw_flow_key *key)
 	 * update skb->csum here.
 	 */
 
-	key->eth.tci = 0;
-	if (skb_vlan_tag_present(skb))
-		key->eth.tci = htons(skb->vlan_tci);
-	else if (eth->h_proto == htons(ETH_P_8021Q))
-		if (unlikely(parse_vlan(skb, key)))
-			return -ENOMEM;
+	if (unlikely(parse_vlan(skb, key)))
+		return -ENOMEM;
 
 	key->eth.type = parse_ethertype(skb);
 	if (unlikely(key->eth.type == htons(0)))
@@ -556,8 +602,7 @@ static int key_extract(struct sk_buff *skb, struct sw_flow_key *key)
 				struct icmphdr *icmp = icmp_hdr(skb);
 				/* The ICMP type and code fields use the 16-bit
 				 * transport port fields, so we need to store
-				 * them in 16-bit network byte order.
-				 */
+				 * them in 16-bit network byte order. */
 				key->tp.src = htons(icmp->type);
 				key->tp.dst = htons(icmp->code);
 			} else {
@@ -624,12 +669,16 @@ static int key_extract(struct sk_buff *skb, struct sw_flow_key *key)
 
 		nh_len = parse_ipv6hdr(skb, key);
 		if (unlikely(nh_len < 0)) {
-			memset(&key->ip, 0, sizeof(key->ip));
-			memset(&key->ipv6.addr, 0, sizeof(key->ipv6.addr));
-			if (nh_len == -EINVAL) {
+			switch (nh_len) {
+			case -EINVAL:
+				memset(&key->ip, 0, sizeof(key->ip));
+				memset(&key->ipv6.addr, 0, sizeof(key->ipv6.addr));
+				/* fall-through */
+			case -EPROTO:
 				skb->transport_header = skb->network_header;
 				error = 0;
-			} else {
+				break;
+			default:
 				error = nh_len;
 			}
 			return error;
@@ -689,21 +738,22 @@ int ovs_flow_key_extract(const struct ip_tunnel_info *tun_info,
 {
 	/* Extract metadata from packet. */
 	if (tun_info) {
-		if (ip_tunnel_info_af(tun_info) != AF_INET)
-			return -EINVAL;
-
+		key->tun_proto = ip_tunnel_info_af(tun_info);
 		memcpy(&key->tun_key, &tun_info->key, sizeof(key->tun_key));
-		BUILD_BUG_ON(((1 << (sizeof(tun_info->options_len) * 8)) - 1) >
-			     sizeof(key->tun_opts));
 
 		if (tun_info->options_len) {
+			BUILD_BUG_ON((1 << (sizeof(tun_info->options_len) *
+						   8)) - 1
+					> sizeof(key->tun_opts));
+
 			ip_tunnel_info_opts_get(TUN_METADATA_OPTS(key, tun_info->options_len),
 						tun_info);
 			key->tun_opts_len = tun_info->options_len;
 		} else {
 			key->tun_opts_len = 0;
 		}
-	} else {
+	} else  {
+		key->tun_proto = 0;
 		key->tun_opts_len = 0;
 		memset(&key->tun_key, 0, sizeof(key->tun_key));
 	}
@@ -723,6 +773,8 @@ int ovs_flow_key_extract_userspace(struct net *net, const struct nlattr *attr,
 				   struct sw_flow_key *key, bool log)
 {
 	int err;
+
+	memset(key, 0, OVS_SW_FLOW_KEY_METADATA_SIZE);
 
 	/* Extract metadata from netlink attributes. */
 	err = ovs_nla_get_flow_metadata(net, attr, key, log);

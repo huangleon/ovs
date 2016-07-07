@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2007-2015 Nicira, Inc.
+ * Copyright (c) 2007-2014 Nicira, Inc.
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of version 2 of the GNU General Public
@@ -47,7 +47,12 @@ struct sk_buff;
 	((void *)((flow_key)->tun_opts + TUN_METADATA_OFFSET(opt_len)))
 
 struct ovs_tunnel_info {
-	struct metadata_dst     *tun_dst;
+	struct metadata_dst	*tun_dst;
+};
+
+struct vlan_head {
+	__be16 tpid;	/* Vlan type. Generally 802.1q or 802.1ad.*/
+	__be16 tci;	/* 0 if no VLAN, VLAN_TAG_PRESENT set otherwise. */
 };
 
 #define OVS_SW_FLOW_KEY_METADATA_SIZE			\
@@ -57,18 +62,20 @@ struct ovs_tunnel_info {
 struct sw_flow_key {
 	u8 tun_opts[255];
 	u8 tun_opts_len;
-	struct ip_tunnel_key tun_key;  /* Encapsulating tunnel key. */
+	struct ip_tunnel_key tun_key;	/* Encapsulating tunnel key. */
 	struct {
 		u32	priority;	/* Packet QoS priority. */
 		u32	skb_mark;	/* SKB mark. */
 		u16	in_port;	/* Input switch port (or DP_MAX_PORTS). */
 	} __packed phy; /* Safe when right after 'tun_key'. */
+	u8 tun_proto;			/* Protocol of encapsulating tunnel. */
 	u32 ovs_flow_hash;		/* Datapath computed hash value.  */
 	u32 recirc_id;			/* Recirculation ID.  */
 	struct {
 		u8     src[ETH_ALEN];	/* Ethernet source address. */
 		u8     dst[ETH_ALEN];	/* Ethernet destination address. */
-		__be16 tci;		/* 0 if no VLAN, VLAN_TAG_PRESENT set otherwise. */
+		struct vlan_head vlan;
+		struct vlan_head cvlan;
 		__be16 type;		/* Ethernet frame type. */
 	} eth;
 	union {
@@ -129,6 +136,7 @@ struct sw_flow_key_range {
 struct sw_flow_mask {
 	int ref_count;
 	struct rcu_head rcu;
+	struct list_head list;
 	struct sw_flow_key_range range;
 	struct sw_flow_key key;
 };
@@ -215,7 +223,6 @@ void ovs_flow_stats_get(const struct sw_flow *, struct ovs_flow_stats *,
 void ovs_flow_stats_clear(struct sw_flow *);
 u64 ovs_flow_used_time(unsigned long flow_jiffies);
 
-/* Update the non-metadata part of the flow key using skb. */
 int ovs_flow_key_update(struct sk_buff *skb, struct sw_flow_key *key);
 int ovs_flow_key_extract(const struct ip_tunnel_info *tun_info,
 			 struct sk_buff *skb,
