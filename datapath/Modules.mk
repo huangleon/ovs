@@ -39,7 +39,8 @@ openvswitch_headers = \
 	flow_table.h \
 	vport.h \
 	vport-internal_dev.h \
-	vport-netdev.h
+	vport-netdev.h \
+	if_vlan_ext.h
 
 openvswitch_extras = \
 	README.md
